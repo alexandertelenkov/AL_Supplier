@@ -93,6 +93,7 @@ type SupplierOverride = {
   canonicalName?: string;
   risk?: RiskLevel;
   contractStatus?: ContractStatus;
+  evaluated?: boolean;
   note?: string;
 };
 
@@ -111,7 +112,7 @@ type UndoBatch = {
   id: string;
   ts: string;
   actor: string;
-  action: "risk" | "contractStatus" | "canonicalName" | "categoryFastAction";
+  action: "risk" | "contractStatus" | "canonicalName" | "categoryFastAction" | "evaluated";
   summary: string;
   items: { code: string; prev?: SupplierOverride }[];
 };
@@ -705,10 +706,11 @@ function buildSupplierMaster(
     const risk: RiskLevel = ov?.risk ?? (dataRisk !== "Unknown" ? dataRisk : policyRisk);
 
     // "Evaluated" means we have a decision that is not Unknown
-    const evaluated =
+    const autoEvaluated =
       evaluatedFromFlags(flags) ||
       (ov?.risk !== undefined && ov?.risk !== "Unknown") ||
       (dataRisk === "Unknown" && policyRisk !== "Unknown");
+    const evaluated = ov?.evaluated !== undefined ? ov.evaluated : autoEvaluated;
 
     // Contract status: override wins, else infer from status strings
     const statusStrings = rows.map((r) => r.status).filter(Boolean) as string[];
@@ -1054,6 +1056,11 @@ function fmtDate(d: string) {
   }
 }
 
+function shortLabel(label: string, max = 28) {
+  if (!label) return "";
+  return label.length > max ? `${label.slice(0, max - 1)}…` : label;
+}
+
 // -----------------------------
 // UI components
 // -----------------------------
@@ -1102,6 +1109,8 @@ export default function SupplierRiskOpsDashboard() {
   const [db, setDB] = useState<PersistedDB>(() => loadDB());
   const [actor, setActor] = useState("Hero");
   const [activeTab, setActiveTab] = useState("overview");
+  const [overviewScope, setOverviewScope] = useState<"Overall" | "Austria" | "Switzerland">("Overall");
+  const [barAnalysis, setBarAnalysis] = useState<{ title: string; details: Record<string, any> } | null>(null);
 
   // filters
   const [q, setQ] = useState("");
@@ -1111,16 +1120,37 @@ export default function SupplierRiskOpsDashboard() {
   const [evalFilter, setEvalFilter] = useState<"All" | "Evaluated" | "Not evaluated">("All");
   const [contractFilter, setContractFilter] = useState<ContractStatus | "All">("All");
   const [categoryFilter, setCategoryFilter] = useState<string | "All">("All");
+  const [fastActionSort, setFastActionSort] = useState<{ key: "spend" | "name" | "contract"; dir: "asc" | "desc" }>({
+    key: "spend",
+    dir: "desc",
+  });
+  const [drillSort, setDrillSort] = useState<{ key: "supplier" | "risk" | "contract" | "poSlice" | "spendSlice" | "totalSpend"; dir: "asc" | "desc" }>({
+    key: "spendSlice",
+    dir: "desc",
+  });
+  const [categoryTableSort, setCategoryTableSort] = useState<{ key: "category" | "suppliers" | "highRisk" | "riskShare" | "spend"; dir: "asc" | "desc" }>({
+    key: "suppliers",
+    dir: "desc",
+  });
 
   // quality lab filters
   const [issueTypeFilter, setIssueTypeFilter] = useState<IssueType | "All">("All");
   const [issueSeverityFilter, setIssueSeverityFilter] = useState<IssueSeverity | "All">("All");
+
+  const [topCategorySortBy, setTopCategorySortBy] = useState<"highRiskSuppliers" | "suppliers">("highRiskSuppliers");
+  const [topSpendSortBy, setTopSpendSortBy] = useState<"highRiskSpend" | "totalSpend">("highRiskSpend");
 
   // bulk
   const [bulkCodes, setBulkCodes] = useState("");
   const [bulkRisk, setBulkRisk] = useState<RiskLevel>("High");
   const [bulkContract, setBulkContract] = useState<ContractStatus>("Sent");
   const [bulkCanonicalName, setBulkCanonicalName] = useState("");
+  const [bulkEvaluated, setBulkEvaluated] = useState<"Evaluated" | "Not evaluated">("Evaluated");
+  const [bulkNameQuery, setBulkNameQuery] = useState("");
+  const [bulkNameSelected, setBulkNameSelected] = useState<Set<string>>(new Set());
+
+  // supplier selection bulk actions
+  const [selectedSupplierCodes, setSelectedSupplierCodes] = useState<Set<string>>(new Set());
 
   // category fast action (eligible-only) - uses spend dominance guardrail
   const [fastCategory, setFastCategory] = useState<string>("");
@@ -1179,6 +1209,51 @@ export default function SupplierRiskOpsDashboard() {
   const countryMetrics = useMemo(() => buildCountryMetrics(db.factRows, suppliers), [db.factRows, suppliers]);
   const categories = useMemo(() => ["All", ...uniq(categoryMetrics.map((c) => c.category)).sort()], [categoryMetrics]);
 
+  const categoryMetricsSorted = useMemo(() => {
+    const dir = categoryTableSort.dir === "asc" ? 1 : -1;
+    return [...categoryMetrics].sort((a, b) => {
+      switch (categoryTableSort.key) {
+        case "category":
+          return dir * a.category.localeCompare(b.category);
+        case "suppliers":
+          return dir * (a.suppliers - b.suppliers);
+        case "highRisk":
+          return dir * (a.highRiskSuppliers - b.highRiskSuppliers);
+        case "riskShare":
+          return dir * (a.riskShare - b.riskShare);
+        case "spend":
+          return dir * (a.totalSpend - b.totalSpend);
+        default:
+          return 0;
+      }
+    });
+  }, [categoryMetrics, categoryTableSort]);
+
+  const overviewFactRows = useMemo(() => {
+    if (overviewScope === "Overall") return db.factRows;
+    return db.factRows.filter((r) => safeStr(r.country) === overviewScope);
+  }, [db.factRows, overviewScope]);
+
+  const overviewSuppliers = useMemo(() => {
+    if (overviewScope === "Overall") return suppliers;
+    return suppliers.filter((s) => s.countries.includes(overviewScope));
+  }, [overviewScope, suppliers]);
+
+  const overviewSupplierByCode = useMemo(() => {
+    const m = new Map<string, SupplierMaster>();
+    for (const s of overviewSuppliers) m.set(s.code, s);
+    return m;
+  }, [overviewSuppliers]);
+
+  const overviewCategoryMetrics = useMemo(
+    () => buildCategoryMetrics(overviewFactRows, overviewSuppliers),
+    [overviewFactRows, overviewSuppliers]
+  );
+  const overviewCountryMetrics = useMemo(
+    () => buildCountryMetrics(overviewFactRows, overviewSuppliers),
+    [overviewFactRows, overviewSuppliers]
+  );
+
   useEffect(() => {
     if (!fastCategory && categories.length > 1) setFastCategory(categories[1]);
   }, [fastCategory, categories]);
@@ -1198,10 +1273,44 @@ export default function SupplierRiskOpsDashboard() {
     return { total, high, signed, sent, notEval, completion, dqDup, unknownInScope, multiCat, nameMany, qualityTotal };
   }, [suppliers, duplicates, issueBuckets, issues]);
 
+  const overviewIssues = useMemo(() => {
+    if (overviewScope === "Overall") return issues;
+    const codes = new Set(overviewSuppliers.map((s) => s.code));
+    return issues.filter((i) => (i.code ? codes.has(i.code) : false));
+  }, [issues, overviewScope, overviewSuppliers]);
+
+  const overviewIssueBuckets = useMemo(() => {
+    const by: Record<IssueType, number> = {
+      CODE_MANY_NAMES: 0,
+      NAME_MANY_CODES: 0,
+      MULTI_CATEGORY_EXPOSURE: 0,
+      RISK_UNKNOWN_IN_SCOPE: 0,
+      MISSING_SUBFAMILY_HIGH_SPEND: 0,
+      POLICY_SUPPRESSED_BY_GUARDRAIL: 0,
+    };
+    for (const i of overviewIssues) by[i.type] += 1;
+    return by;
+  }, [overviewIssues]);
+
+  const overviewKpis = useMemo(() => {
+    const total = overviewSuppliers.length;
+    const high = overviewSuppliers.filter((s) => s.risk === "High").length;
+    const signed = overviewSuppliers.filter((s) => s.contractStatus === "Signed").length;
+    const sent = overviewSuppliers.filter((s) => s.contractStatus === "Sent").length;
+    const notEval = overviewSuppliers.filter((s) => !s.evaluated).length;
+    const completion = high ? signed / high : 0;
+    const dqDup = overviewIssues.filter((i) => i.type === "CODE_MANY_NAMES").length;
+    const unknownInScope = overviewIssueBuckets.RISK_UNKNOWN_IN_SCOPE;
+    const multiCat = overviewIssueBuckets.MULTI_CATEGORY_EXPOSURE;
+    const nameMany = overviewIssueBuckets.NAME_MANY_CODES;
+    const qualityTotal = overviewIssues.length;
+    return { total, high, signed, sent, notEval, completion, dqDup, unknownInScope, multiCat, nameMany, qualityTotal };
+  }, [overviewSuppliers, overviewIssues, overviewIssueBuckets]);
+
   const funnelData = useMemo(() => {
-    const high = suppliers.filter((s) => s.risk === "High").length;
-    const signed = suppliers.filter((s) => s.contractStatus === "Signed").length;
-    const sent = suppliers.filter((s) => s.contractStatus === "Sent").length;
+    const high = overviewSuppliers.filter((s) => s.risk === "High").length;
+    const signed = overviewSuppliers.filter((s) => s.contractStatus === "Signed").length;
+    const sent = overviewSuppliers.filter((s) => s.contractStatus === "Sent").length;
     const pending = Math.max(high - signed, 0);
     return [
       { stage: "High risk", value: high },
@@ -1209,29 +1318,23 @@ export default function SupplierRiskOpsDashboard() {
       { stage: "Signed", value: signed },
       { stage: "Pending", value: pending },
     ];
-  }, [suppliers]);
+  }, [overviewSuppliers]);
 
   const topRiskyByCount = useMemo(() => {
-    return [...categoryMetrics]
-      .filter((c) => c.suppliers >= 10)
-      .sort((a, b) => b.highRiskSuppliers - a.highRiskSuppliers)
-      .slice(0, 10);
-  }, [categoryMetrics]);
+    return [...overviewCategoryMetrics].sort((a, b) => b[topCategorySortBy] - a[topCategorySortBy]);
+  }, [overviewCategoryMetrics, topCategorySortBy]);
 
   const topRiskyBySpend = useMemo(() => {
-    return [...categoryMetrics]
-      .filter((c) => Math.abs(c.totalSpend) > 0)
-      .sort((a, b) => b.highRiskSpend - a.highRiskSpend)
-      .slice(0, 10);
-  }, [categoryMetrics]);
+    return [...overviewCategoryMetrics].sort((a, b) => b[topSpendSortBy] - a[topSpendSortBy]);
+  }, [overviewCategoryMetrics, topSpendSortBy]);
 
   const topCountriesByCount = useMemo(() => {
-    return [...countryMetrics].sort((a, b) => b.suppliers - a.suppliers).slice(0, 10);
-  }, [countryMetrics]);
+    return [...overviewCountryMetrics].sort((a, b) => b.suppliers - a.suppliers);
+  }, [overviewCountryMetrics]);
 
   const topCountriesBySpend = useMemo(() => {
-    return [...countryMetrics].sort((a, b) => b.totalSpend - a.totalSpend).slice(0, 10);
-  }, [countryMetrics]);
+    return [...overviewCountryMetrics].sort((a, b) => b.totalSpend - a.totalSpend);
+  }, [overviewCountryMetrics]);
 
   const riskMix = useMemo(() => {
     const buckets: Record<RiskLevel, { suppliers: number; spend: number }> = {
@@ -1239,7 +1342,7 @@ export default function SupplierRiskOpsDashboard() {
       "Non-risk": { suppliers: 0, spend: 0 },
       Unknown: { suppliers: 0, spend: 0 },
     };
-    for (const s of suppliers) {
+    for (const s of overviewSuppliers) {
       buckets[s.risk].suppliers += 1;
       buckets[s.risk].spend += s.totalSpend;
     }
@@ -1248,7 +1351,7 @@ export default function SupplierRiskOpsDashboard() {
       suppliers: buckets[r].suppliers,
       spend: buckets[r].spend,
     }));
-  }, [suppliers]);
+  }, [overviewSuppliers]);
   const supplierByCode = useMemo(() => {
     const m = new Map<string, SupplierMaster>();
     for (const s of suppliers) m.set(s.code, s);
@@ -1261,6 +1364,10 @@ export default function SupplierRiskOpsDashboard() {
   const bulkContractPreview = useMemo(
     () => (bulkParsedCodes.length ? planBulkContract(bulkParsedCodes, bulkContract) : null),
     [bulkParsedCodes, bulkContract, supplierByCode, db.overrides]
+  );
+  const bulkEvaluatedPreview = useMemo(
+    () => (bulkParsedCodes.length ? planBulkEvaluated(bulkParsedCodes, bulkEvaluated) : null),
+    [bulkParsedCodes, bulkEvaluated, supplierByCode, db.overrides]
   );
   const bulkCanonicalPreview = useMemo(() => {
     const nm = safeStr(bulkCanonicalName);
@@ -1288,7 +1395,7 @@ export default function SupplierRiskOpsDashboard() {
   const drillSuppliers = useMemo(() => {
     if (!drillCategory) return [] as any[];
     const by: Record<string, { spend: number; po: number }> = {};
-    for (const r of db.factRows) {
+    for (const r of overviewFactRows) {
       if (safeStr(r.category) !== drillCategory) continue;
       const code = normCode(r.supplierCode);
       if (!code) continue;
@@ -1299,7 +1406,7 @@ export default function SupplierRiskOpsDashboard() {
 
     return Object.entries(by)
       .map(([code, v]) => {
-        const s = supplierByCode.get(code);
+        const s = overviewSupplierByCode.get(code);
         return {
           code,
           canonicalName: s?.canonicalName ?? "(missing name)",
@@ -1314,12 +1421,12 @@ export default function SupplierRiskOpsDashboard() {
       })
       .sort((a: any, b: any) => b.spendInSlice - a.spendInSlice)
       .slice(0, 500);
-  }, [drillCategory, db.factRows, supplierByCode]);
+  }, [drillCategory, overviewFactRows, overviewSupplierByCode]);
 
   const drillSuppliersByCountry = useMemo(() => {
     if (!drillCountry) return [] as any[];
     const by: Record<string, { spend: number; po: number }> = {};
-    for (const r of db.factRows) {
+    for (const r of overviewFactRows) {
       const c = safeStr(r.country) || "(unknown)";
       if (c !== drillCountry) continue;
       const code = normCode(r.supplierCode);
@@ -1331,7 +1438,7 @@ export default function SupplierRiskOpsDashboard() {
 
     return Object.entries(by)
       .map(([code, v]) => {
-        const s = supplierByCode.get(code);
+        const s = overviewSupplierByCode.get(code);
         return {
           code,
           canonicalName: s?.canonicalName ?? "(missing name)",
@@ -1346,7 +1453,30 @@ export default function SupplierRiskOpsDashboard() {
       })
       .sort((a: any, b: any) => b.spendInSlice - a.spendInSlice)
       .slice(0, 500);
-  }, [drillCountry, db.factRows, supplierByCode]);
+  }, [drillCountry, overviewFactRows, overviewSupplierByCode]);
+
+  const drillSuppliersSorted = useMemo(() => {
+    const data = drillCategory ? drillSuppliers : drillSuppliersByCountry;
+    const dir = drillSort.dir === "asc" ? 1 : -1;
+    return [...data].sort((a: any, b: any) => {
+      switch (drillSort.key) {
+        case "supplier":
+          return dir * a.canonicalName.localeCompare(b.canonicalName);
+        case "risk":
+          return dir * a.risk.localeCompare(b.risk);
+        case "contract":
+          return dir * a.contractStatus.localeCompare(b.contractStatus);
+        case "poSlice":
+          return dir * (a.poInSlice - b.poInSlice);
+        case "spendSlice":
+          return dir * (a.spendInSlice - b.spendInSlice);
+        case "totalSpend":
+          return dir * (a.totalSpend - b.totalSpend);
+        default:
+          return 0;
+      }
+    });
+  }, [drillCategory, drillSuppliers, drillSuppliersByCountry, drillSort]);
 
   const supplierFiltered = useMemo(() => {
     const needle = q.trim().toLowerCase();
@@ -1368,13 +1498,156 @@ export default function SupplierRiskOpsDashboard() {
       .slice(0, 1500); // guardrail for UI
   }, [suppliers, q, riskFilter, evalFilter, contractFilter, categoryFilter]);
 
+  const bulkNameMatches = useMemo(() => {
+    const needle = bulkNameQuery.trim().toLowerCase();
+    if (!needle) return [];
+    return suppliers
+      .filter((s) => s.canonicalName.toLowerCase().includes(needle) || s.code.toLowerCase().includes(needle))
+      .slice(0, 300);
+  }, [bulkNameQuery, suppliers]);
+
   const worklist = useMemo(() => {
     // Fast Action list: High risk and not signed
-    return suppliers
-      .filter((s) => s.risk === "High" && s.contractStatus !== "Signed")
-      .sort((a, b) => b.totalSpend - a.totalSpend)
-      .slice(0, 200);
-  }, [suppliers]);
+    const base = suppliers.filter((s) => s.risk === "High" && s.contractStatus !== "Signed");
+    const sorted = [...base].sort((a, b) => {
+      const dir = fastActionSort.dir === "asc" ? 1 : -1;
+      if (fastActionSort.key === "name") return dir * a.canonicalName.localeCompare(b.canonicalName);
+      if (fastActionSort.key === "contract") return dir * a.contractStatus.localeCompare(b.contractStatus);
+      return dir * (a.totalSpend - b.totalSpend);
+    });
+    return sorted.slice(0, 200);
+  }, [suppliers, fastActionSort]);
+
+  const selectedSupplierList = useMemo(() => Array.from(selectedSupplierCodes), [selectedSupplierCodes]);
+
+  const toggleSupplierSelection = (code: string) => {
+    setSelectedSupplierCodes((prev) => {
+      const next = new Set(prev);
+      if (next.has(code)) next.delete(code);
+      else next.add(code);
+      return next;
+    });
+  };
+
+  const toggleAllSuppliersInView = (checked: boolean) => {
+    setSelectedSupplierCodes((prev) => {
+      const next = new Set(prev);
+      if (checked) {
+        supplierFiltered.forEach((s) => next.add(s.code));
+      } else {
+        supplierFiltered.forEach((s) => next.delete(s.code));
+      }
+      return next;
+    });
+  };
+
+  const clearSelectedSuppliers = () => setSelectedSupplierCodes(new Set());
+
+  const toggleBulkNameSelection = (code: string) => {
+    setBulkNameSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(code)) next.delete(code);
+      else next.add(code);
+      return next;
+    });
+  };
+
+  const clearBulkNameSelection = () => setBulkNameSelected(new Set());
+
+  const applySelectedBulkMark = () => {
+    if (!selectedSupplierList.length) return;
+    const riskPlan = planBulkRisk(selectedSupplierList, bulkRisk);
+    const evalPlan = planBulkEvaluated(selectedSupplierList, bulkEvaluated);
+    const didRisk = applyPlan(
+      "risk",
+      `Bulk risk ${bulkRisk === "Unknown" ? "cleared" : "set"}: ${bulkRisk} for ${riskPlan.changes.length} suppliers`,
+      riskPlan
+    );
+    const didEval = applyPlan(
+      "evaluated",
+      `Bulk evaluated ${bulkEvaluated === "Evaluated" ? "set" : "cleared"} for ${evalPlan.changes.length} suppliers`,
+      evalPlan
+    );
+
+    if (didRisk) {
+      pushLog({
+        type: "BULK_UPDATE",
+        summary: `Selection bulk risk ${bulkRisk === "Unknown" ? "cleared" : "set"}: ${bulkRisk} for ${riskPlan.changes.length} suppliers`,
+        details: {
+          action: "risk",
+          risk: bulkRisk,
+          changed: riskPlan.changes.length,
+          found: riskPlan.found.length,
+          notFound: riskPlan.notFound.length,
+          sample: riskPlan.changes.slice(0, 20).map((x) => x.code),
+        },
+      });
+    }
+
+    if (didEval) {
+      pushLog({
+        type: "BULK_UPDATE",
+        summary: `Selection bulk evaluated ${bulkEvaluated === "Evaluated" ? "set" : "cleared"} for ${evalPlan.changes.length} suppliers`,
+        details: {
+          action: "evaluated",
+          evaluated: bulkEvaluated,
+          changed: evalPlan.changes.length,
+          found: evalPlan.found.length,
+          notFound: evalPlan.notFound.length,
+          sample: evalPlan.changes.slice(0, 20).map((x) => x.code),
+        },
+      });
+    }
+  };
+
+  const applyBulkNameSelection = () => {
+    const codes = Array.from(bulkNameSelected);
+    if (!codes.length) return;
+    const riskPlan = planBulkRisk(codes, bulkRisk);
+    const evalPlan = planBulkEvaluated(codes, bulkEvaluated);
+    const didRisk = applyPlan(
+      "risk",
+      `Name search bulk risk ${bulkRisk === "Unknown" ? "cleared" : "set"}: ${bulkRisk} for ${riskPlan.changes.length} suppliers`,
+      riskPlan
+    );
+    const didEval = applyPlan(
+      "evaluated",
+      `Name search bulk evaluated ${bulkEvaluated === "Evaluated" ? "set" : "cleared"} for ${evalPlan.changes.length} suppliers`,
+      evalPlan
+    );
+
+    if (didRisk || didEval) {
+      pushLog({
+        type: "BULK_UPDATE",
+        summary: `Name search bulk update applied to ${codes.length} selected suppliers`,
+        details: {
+          risk: bulkRisk,
+          evaluated: bulkEvaluated,
+          riskChanged: riskPlan.changes.length,
+          evaluatedChanged: evalPlan.changes.length,
+          sample: codes.slice(0, 20),
+        },
+      });
+    }
+  };
+
+  const pushBarAnalysis = (title: string, details: Record<string, any>) => {
+    setBarAnalysis({ title, details });
+  };
+
+  const setDrillSortKey = (key: typeof drillSort.key) => {
+    setDrillSort((prev) => ({
+      key,
+      dir: prev.key === key ? (prev.dir === "asc" ? "desc" : "asc") : "desc",
+    }));
+  };
+
+  const setCategorySortKey = (key: typeof categoryTableSort.key) => {
+    setCategoryTableSort((prev) => ({
+      key,
+      dir: prev.key === key ? (prev.dir === "asc" ? "desc" : "asc") : "desc",
+    }));
+  };
 
   function pushLog(entry: Omit<LogEntry, "id" | "ts" | "actor">) {
     const e: LogEntry = { id: uuid(), ts: nowIso(), actor, ...entry };
@@ -1552,6 +1825,7 @@ export default function SupplierRiskOpsDashboard() {
     if (cn) out.canonicalName = cn;
     if (ov.risk && ov.risk !== "Unknown") out.risk = ov.risk;
     if (ov.contractStatus && ov.contractStatus !== "N/A") out.contractStatus = ov.contractStatus;
+    if (ov.evaluated !== undefined) out.evaluated = ov.evaluated;
     const note = safeStr(ov.note);
     if (note) out.note = note;
     return Object.keys(out).length ? out : undefined;
@@ -1641,6 +1915,31 @@ export default function SupplierRiskOpsDashboard() {
       if (!safeStr(prev?.canonicalName) && effective === name) continue;
 
       const patched = cleanOverride({ ...(prev || {}), canonicalName: name });
+      changes.push({ code: c, prev: prev ? { ...prev } : undefined, next: patched });
+    }
+
+    return { found, notFound, changes };
+  }
+
+  function planBulkEvaluated(codes: string[], target: "Evaluated" | "Not evaluated") {
+    const found: string[] = [];
+    const notFound: string[] = [];
+    const changes: { code: string; prev?: SupplierOverride; next?: SupplierOverride }[] = [];
+
+    for (const c of codes) {
+      const s = supplierByCode.get(c);
+      if (!s) {
+        notFound.push(c);
+        continue;
+      }
+      found.push(c);
+      const prev = db.overrides[c];
+      const nextEvaluated = target === "Evaluated";
+
+      if (prev?.evaluated === nextEvaluated) continue;
+      if (prev?.evaluated === undefined && s.evaluated === nextEvaluated) continue;
+
+      const patched = cleanOverride({ ...(prev || {}), evaluated: nextEvaluated });
       changes.push({ code: c, prev: prev ? { ...prev } : undefined, next: patched });
     }
 
@@ -1764,6 +2063,34 @@ export default function SupplierRiskOpsDashboard() {
       details: {
         action: "canonicalName",
         name,
+        changed: plan.changes.length,
+        found: plan.found.length,
+        notFound: plan.notFound.length,
+        notFoundSample: plan.notFound.slice(0, 25),
+        sample: plan.changes.slice(0, 20).map((x) => x.code),
+      },
+    });
+  }
+
+  function bulkApplyEvaluated(codesOverride?: string[]) {
+    const codes = codesOverride ?? parseCodes(bulkCodes);
+    if (!codes.length) return;
+
+    const plan = planBulkEvaluated(codes, bulkEvaluated);
+    const didApply = applyPlan(
+      "evaluated",
+      `Bulk evaluated ${bulkEvaluated === "Evaluated" ? "set" : "cleared"} for ${plan.changes.length} suppliers`,
+      plan
+    );
+
+    pushLog({
+      type: "BULK_UPDATE",
+      summary: didApply
+        ? `Bulk evaluated ${bulkEvaluated === "Evaluated" ? "set" : "cleared"} for ${plan.changes.length} suppliers`
+        : `Bulk evaluated: no changes (already compliant)`,
+      details: {
+        action: "evaluated",
+        evaluated: bulkEvaluated,
         changed: plan.changes.length,
         found: plan.found.length,
         notFound: plan.notFound.length,
@@ -2070,6 +2397,27 @@ export default function SupplierRiskOpsDashboard() {
               <EmptyState title="No data loaded" subtitle="Import your XLSX tracker (recommended) or a DB snapshot (JSON)." />
             ) : (
               <>
+                <div className="flex flex-wrap items-center gap-2">
+                  <Button
+                    variant={overviewScope === "Overall" ? "default" : "outline"}
+                    onClick={() => setOverviewScope("Overall")}
+                  >
+                    Overall
+                  </Button>
+                  <Button
+                    variant={overviewScope === "Austria" ? "default" : "outline"}
+                    onClick={() => setOverviewScope("Austria")}
+                  >
+                    Austria
+                  </Button>
+                  <Button
+                    variant={overviewScope === "Switzerland" ? "default" : "outline"}
+                    onClick={() => setOverviewScope("Switzerland")}
+                  >
+                    Switzerland
+                  </Button>
+                </div>
+
                 <div className="grid gap-3 md:grid-cols-6">
                   <Card className="md:col-span-2">
                     <CardHeader className="pb-2">
@@ -2078,7 +2426,7 @@ export default function SupplierRiskOpsDashboard() {
                       </CardTitle>
                     </CardHeader>
                     <CardContent>
-                      <div className="text-3xl font-semibold">{kpis.total}</div>
+                      <div className="text-3xl font-semibold">{overviewKpis.total}</div>
                       <div className="mt-1 text-sm text-muted-foreground">Unique supplier codes</div>
                     </CardContent>
                   </Card>
@@ -2090,7 +2438,7 @@ export default function SupplierRiskOpsDashboard() {
                       </CardTitle>
                     </CardHeader>
                     <CardContent>
-                      <div className="text-3xl font-semibold">{kpis.high}</div>
+                      <div className="text-3xl font-semibold">{overviewKpis.high}</div>
                       <div className="mt-1 text-sm text-muted-foreground">Contract required</div>
                     </CardContent>
                   </Card>
@@ -2102,7 +2450,7 @@ export default function SupplierRiskOpsDashboard() {
                       </CardTitle>
                     </CardHeader>
                     <CardContent>
-                      <div className="text-3xl font-semibold">{kpis.signed}</div>
+                      <div className="text-3xl font-semibold">{overviewKpis.signed}</div>
                       <div className="mt-1 text-sm text-muted-foreground">Agreements signed</div>
                     </CardContent>
                   </Card>
@@ -2114,7 +2462,7 @@ export default function SupplierRiskOpsDashboard() {
                       </CardTitle>
                     </CardHeader>
                     <CardContent>
-                      <div className="text-3xl font-semibold">{kpis.notEval}</div>
+                      <div className="text-3xl font-semibold">{overviewKpis.notEval}</div>
                       <div className="mt-1 text-sm text-muted-foreground">Needs decision</div>
                     </CardContent>
                   </Card>
@@ -2126,9 +2474,9 @@ export default function SupplierRiskOpsDashboard() {
                       </CardTitle>
                     </CardHeader>
                     <CardContent>
-                      <div className="text-3xl font-semibold">{kpis.qualityTotal}</div>
+                      <div className="text-3xl font-semibold">{overviewKpis.qualityTotal}</div>
                       <div className="mt-1 text-sm text-muted-foreground">
-                        Dup {kpis.dqDup} • Multi-cat {kpis.multiCat} • Unknown-in-scope {kpis.unknownInScope}
+                        Dup {overviewKpis.dqDup} • Multi-cat {overviewKpis.multiCat} • Unknown-in-scope {overviewKpis.unknownInScope}
                       </div>
                     </CardContent>
                   </Card>
@@ -2146,7 +2494,16 @@ export default function SupplierRiskOpsDashboard() {
                           <XAxis dataKey="stage" />
                           <YAxis />
                           <Tooltip />
-                          <Bar dataKey="value" />
+                          <Bar
+                            dataKey="value"
+                            onClick={(d: any) =>
+                              pushBarAnalysis("Funnel stage", {
+                                stage: d?.payload?.stage,
+                                value: d?.payload?.value,
+                                scope: overviewScope,
+                              })
+                            }
+                          />
                         </BarChart>
                       </ResponsiveContainer>
                     </CardContent>
@@ -2154,10 +2511,34 @@ export default function SupplierRiskOpsDashboard() {
 
                   <Card>
                     <CardHeader>
-                      <CardTitle className="text-base">Fast Action Queue (Top 200)</CardTitle>
+                      <CardTitle className="flex items-center justify-between text-base">
+                        <span>Fast Action Queue (Top 200)</span>
+                        <Select
+                          value={`${fastActionSort.key}:${fastActionSort.dir}`}
+                          onValueChange={(v: any) => {
+                            const [key, dir] = String(v).split(":");
+                            setFastActionSort({
+                              key: key as typeof fastActionSort.key,
+                              dir: dir as typeof fastActionSort.dir,
+                            });
+                          }}
+                        >
+                          <SelectTrigger className="h-8 w-[200px]">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="spend:desc">Spend (desc)</SelectItem>
+                            <SelectItem value="spend:asc">Spend (asc)</SelectItem>
+                            <SelectItem value="name:asc">Name (A→Z)</SelectItem>
+                            <SelectItem value="name:desc">Name (Z→A)</SelectItem>
+                            <SelectItem value="contract:asc">Contract (A→Z)</SelectItem>
+                            <SelectItem value="contract:desc">Contract (Z→A)</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </CardTitle>
                     </CardHeader>
                     <CardContent>
-                      <div className="text-sm text-muted-foreground">High risk and not signed — sorted by spend.</div>
+                      <div className="text-sm text-muted-foreground">High risk and not signed — sorted by your selection.</div>
                       <div className="mt-3 max-h-[240px] overflow-auto rounded-xl border">
                         <Table>
                           <TableHeader>
@@ -2170,10 +2551,19 @@ export default function SupplierRiskOpsDashboard() {
                           </TableHeader>
                           <TableBody>
                             {worklist.slice(0, 12).map((s) => (
-                              <TableRow key={s.code} className="cursor-pointer" onClick={() => setActiveTab("suppliers")}>
+                              <TableRow key={s.code}>
                                 <TableCell>
-                                  <div className="font-medium">{s.canonicalName}</div>
-                                  <div className="text-xs text-muted-foreground">{s.code}</div>
+                                  <button
+                                    type="button"
+                                    className="text-left"
+                                    onClick={() => {
+                                      setQ(s.code);
+                                      setActiveTab("suppliers");
+                                    }}
+                                  >
+                                    <div className="font-medium text-primary">{s.canonicalName}</div>
+                                    <div className="text-xs text-muted-foreground">{s.code}</div>
+                                  </button>
                                 </TableCell>
                                 <TableCell>
                                   <RiskBadge risk={s.risk} />
@@ -2189,7 +2579,7 @@ export default function SupplierRiskOpsDashboard() {
                       </div>
                       <div className="mt-3 flex items-center justify-between">
                         <div className="text-xs text-muted-foreground">Completion (Signed / High risk)</div>
-                        <div className="text-sm font-semibold">{(kpis.completion * 100).toFixed(0)}%</div>
+                        <div className="text-sm font-semibold">{(overviewKpis.completion * 100).toFixed(0)}%</div>
                       </div>
                     </CardContent>
                   </Card>
@@ -2198,7 +2588,18 @@ export default function SupplierRiskOpsDashboard() {
                 <div className="grid gap-3 md:grid-cols-2">
                   <Card>
                     <CardHeader>
-                      <CardTitle className="text-base">Top risky categories (by suppliers)</CardTitle>
+                      <CardTitle className="flex items-center justify-between text-base">
+                        <span>Top risky categories (by suppliers)</span>
+                        <Select value={topCategorySortBy} onValueChange={(v: any) => setTopCategorySortBy(v)}>
+                          <SelectTrigger className="h-8 w-[180px]">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="highRiskSuppliers">Sort by high risk</SelectItem>
+                            <SelectItem value="suppliers">Sort by total suppliers</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </CardTitle>
                     </CardHeader>
                     <CardContent className="h-[320px]">
                       <ResponsiveContainer width="100%" height="100%">
@@ -2206,18 +2607,42 @@ export default function SupplierRiskOpsDashboard() {
                           data={topRiskyByCount}
                           layout="vertical"
                           margin={{ left: 60 }}
-                          onClick={(state: any) => {
-                            const label = state?.activeLabel;
-                            if (label) setDrillCategory(label);
-                          }}
                         >
                           <CartesianGrid strokeDasharray="3 3" />
                           <XAxis type="number" />
-                          <YAxis dataKey="category" type="category" width={160} />
+                          <YAxis dataKey="category" type="category" width={220} interval={0} tickFormatter={(v: any) => shortLabel(String(v))} />
                           <Tooltip />
                           <Legend />
-                          <Bar dataKey="highRiskSuppliers" name="High risk suppliers" onClick={(d: any) => setDrillCategory(d?.payload?.category ?? null)} />
-                          <Bar dataKey="suppliers" name="Total suppliers" onClick={(d: any) => setDrillCategory(d?.payload?.category ?? null)} />
+                          <Bar
+                            dataKey="highRiskSuppliers"
+                            name="High risk suppliers"
+                            fill="#fca5a5"
+                            onClick={(d: any) => {
+                              setDrillCategory(d?.payload?.category ?? null);
+                              pushBarAnalysis("Category by suppliers", {
+                                category: d?.payload?.category,
+                                highRiskSuppliers: d?.payload?.highRiskSuppliers,
+                                suppliers: d?.payload?.suppliers,
+                                riskShare: d?.payload?.riskShare,
+                                scope: overviewScope,
+                              });
+                            }}
+                          />
+                          <Bar
+                            dataKey="suppliers"
+                            name="Total suppliers"
+                            fill="#93c5fd"
+                            onClick={(d: any) => {
+                              setDrillCategory(d?.payload?.category ?? null);
+                              pushBarAnalysis("Category by suppliers", {
+                                category: d?.payload?.category,
+                                highRiskSuppliers: d?.payload?.highRiskSuppliers,
+                                suppliers: d?.payload?.suppliers,
+                                riskShare: d?.payload?.riskShare,
+                                scope: overviewScope,
+                              });
+                            }}
+                          />
                         </BarChart>
                       </ResponsiveContainer>
                     </CardContent>
@@ -2225,7 +2650,18 @@ export default function SupplierRiskOpsDashboard() {
 
                   <Card>
                     <CardHeader>
-                      <CardTitle className="text-base">Top risky categories (by spend)</CardTitle>
+                      <CardTitle className="flex items-center justify-between text-base">
+                        <span>Top risky categories (by spend)</span>
+                        <Select value={topSpendSortBy} onValueChange={(v: any) => setTopSpendSortBy(v)}>
+                          <SelectTrigger className="h-8 w-[180px]">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="highRiskSpend">Sort by high risk spend</SelectItem>
+                            <SelectItem value="totalSpend">Sort by total spend</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </CardTitle>
                     </CardHeader>
                     <CardContent className="h-[320px]">
                       <ResponsiveContainer width="100%" height="100%">
@@ -2233,18 +2669,40 @@ export default function SupplierRiskOpsDashboard() {
                           data={topRiskyBySpend}
                           layout="vertical"
                           margin={{ left: 60 }}
-                          onClick={(state: any) => {
-                            const label = state?.activeLabel;
-                            if (label) setDrillCategory(label);
-                          }}
                         >
                           <CartesianGrid strokeDasharray="3 3" />
                           <XAxis type="number" tickFormatter={(v: any) => fmtMoney(Number(v))} />
-                          <YAxis dataKey="category" type="category" width={160} />
+                          <YAxis dataKey="category" type="category" width={220} interval={0} tickFormatter={(v: any) => shortLabel(String(v))} />
                           <Tooltip formatter={(v: any) => fmtMoney(Number(v))} />
                           <Legend />
-                          <Bar dataKey="highRiskSpend" name="High risk spend" onClick={(d: any) => setDrillCategory(d?.payload?.category ?? null)} />
-                          <Bar dataKey="totalSpend" name="Total spend" onClick={(d: any) => setDrillCategory(d?.payload?.category ?? null)} />
+                          <Bar
+                            dataKey="highRiskSpend"
+                            name="High risk spend"
+                            fill="#fca5a5"
+                            onClick={(d: any) => {
+                              setDrillCategory(d?.payload?.category ?? null);
+                              pushBarAnalysis("Category by spend", {
+                                category: d?.payload?.category,
+                                highRiskSpend: d?.payload?.highRiskSpend,
+                                totalSpend: d?.payload?.totalSpend,
+                                scope: overviewScope,
+                              });
+                            }}
+                          />
+                          <Bar
+                            dataKey="totalSpend"
+                            name="Total spend"
+                            fill="#93c5fd"
+                            onClick={(d: any) => {
+                              setDrillCategory(d?.payload?.category ?? null);
+                              pushBarAnalysis("Category by spend", {
+                                category: d?.payload?.category,
+                                highRiskSpend: d?.payload?.highRiskSpend,
+                                totalSpend: d?.payload?.totalSpend,
+                                scope: overviewScope,
+                              });
+                            }}
+                          />
                         </BarChart>
                       </ResponsiveContainer>
                     </CardContent>
@@ -2262,18 +2720,40 @@ export default function SupplierRiskOpsDashboard() {
                         <BarChart
                           data={topCountriesByCount}
                           margin={{ left: 10, right: 10 }}
-                          onClick={(state: any) => {
-                            const label = state?.activeLabel;
-                            if (label) setDrillCountry(label);
-                          }}
                         >
                           <CartesianGrid strokeDasharray="3 3" />
                           <XAxis dataKey="country" />
                           <YAxis />
                           <Tooltip />
                           <Legend />
-                          <Bar dataKey="highRiskSuppliers" name="High risk" onClick={(d: any) => setDrillCountry(d?.payload?.country ?? null)} />
-                          <Bar dataKey="suppliers" name="Total" onClick={(d: any) => setDrillCountry(d?.payload?.country ?? null)} />
+                          <Bar
+                            dataKey="highRiskSuppliers"
+                            name="High risk"
+                            fill="#fca5a5"
+                            onClick={(d: any) => {
+                              setDrillCountry(d?.payload?.country ?? null);
+                              pushBarAnalysis("Country by suppliers", {
+                                country: d?.payload?.country,
+                                highRiskSuppliers: d?.payload?.highRiskSuppliers,
+                                suppliers: d?.payload?.suppliers,
+                                scope: overviewScope,
+                              });
+                            }}
+                          />
+                          <Bar
+                            dataKey="suppliers"
+                            name="Total"
+                            fill="#93c5fd"
+                            onClick={(d: any) => {
+                              setDrillCountry(d?.payload?.country ?? null);
+                              pushBarAnalysis("Country by suppliers", {
+                                country: d?.payload?.country,
+                                highRiskSuppliers: d?.payload?.highRiskSuppliers,
+                                suppliers: d?.payload?.suppliers,
+                                scope: overviewScope,
+                              });
+                            }}
+                          />
                         </BarChart>
                       </ResponsiveContainer>
                     </CardContent>
@@ -2291,8 +2771,32 @@ export default function SupplierRiskOpsDashboard() {
                           <YAxis />
                           <Tooltip formatter={(v: any, n: any) => (n === "spend" ? fmtMoney(Number(v)) : v)} />
                           <Legend />
-                          <Bar dataKey="suppliers" name="Suppliers" />
-                          <Bar dataKey="spend" name="Spend" />
+                          <Bar
+                            dataKey="suppliers"
+                            name="Suppliers"
+                            fill="#93c5fd"
+                            onClick={(d: any) =>
+                              pushBarAnalysis("Risk mix (suppliers)", {
+                                risk: d?.payload?.risk,
+                                suppliers: d?.payload?.suppliers,
+                                spend: d?.payload?.spend,
+                                scope: overviewScope,
+                              })
+                            }
+                          />
+                          <Bar
+                            dataKey="spend"
+                            name="Spend"
+                            fill="#fca5a5"
+                            onClick={(d: any) =>
+                              pushBarAnalysis("Risk mix (spend)", {
+                                risk: d?.payload?.risk,
+                                suppliers: d?.payload?.suppliers,
+                                spend: d?.payload?.spend,
+                                scope: overviewScope,
+                              })
+                            }
+                          />
                         </BarChart>
                       </ResponsiveContainer>
                     </CardContent>
@@ -2310,18 +2814,40 @@ export default function SupplierRiskOpsDashboard() {
                         <BarChart
                           data={topCountriesBySpend}
                           margin={{ left: 10, right: 10 }}
-                          onClick={(state: any) => {
-                            const label = state?.activeLabel;
-                            if (label) setDrillCountry(label);
-                          }}
                         >
                           <CartesianGrid strokeDasharray="3 3" />
                           <XAxis dataKey="country" />
                           <YAxis tickFormatter={(v: any) => fmtMoney(Number(v))} />
                           <Tooltip formatter={(v: any) => fmtMoney(Number(v))} />
                           <Legend />
-                          <Bar dataKey="highRiskSpend" name="High risk spend" onClick={(d: any) => setDrillCountry(d?.payload?.country ?? null)} />
-                          <Bar dataKey="totalSpend" name="Total spend" onClick={(d: any) => setDrillCountry(d?.payload?.country ?? null)} />
+                          <Bar
+                            dataKey="highRiskSpend"
+                            name="High risk spend"
+                            fill="#fca5a5"
+                            onClick={(d: any) => {
+                              setDrillCountry(d?.payload?.country ?? null);
+                              pushBarAnalysis("Country by spend", {
+                                country: d?.payload?.country,
+                                highRiskSpend: d?.payload?.highRiskSpend,
+                                totalSpend: d?.payload?.totalSpend,
+                                scope: overviewScope,
+                              });
+                            }}
+                          />
+                          <Bar
+                            dataKey="totalSpend"
+                            name="Total spend"
+                            fill="#93c5fd"
+                            onClick={(d: any) => {
+                              setDrillCountry(d?.payload?.country ?? null);
+                              pushBarAnalysis("Country by spend", {
+                                country: d?.payload?.country,
+                                highRiskSpend: d?.payload?.highRiskSpend,
+                                totalSpend: d?.payload?.totalSpend,
+                                scope: overviewScope,
+                              });
+                            }}
+                          />
                         </BarChart>
                       </ResponsiveContainer>
                     </CardContent>
@@ -2334,21 +2860,31 @@ export default function SupplierRiskOpsDashboard() {
                     <CardContent className="h-[320px]">
                       <ResponsiveContainer width="100%" height="100%">
                         <BarChart
-                          data={[...countryMetrics]
+                          data={[...overviewCountryMetrics]
                             .filter((c) => c.suppliers >= 10)
                             .sort((a, b) => b.riskShare - a.riskShare)
                             .slice(0, 10)}
                           margin={{ left: 10, right: 10 }}
-                          onClick={(state: any) => {
-                            const label = state?.activeLabel;
-                            if (label) setDrillCountry(label);
-                          }}
                         >
                           <CartesianGrid strokeDasharray="3 3" />
                           <XAxis dataKey="country" />
                           <YAxis tickFormatter={(v: any) => `${Math.round(Number(v) * 100)}%`} />
                           <Tooltip formatter={(v: any) => `${Math.round(Number(v) * 100)}%`} />
-                          <Bar dataKey="riskShare" name="High risk share" onClick={(d: any) => setDrillCountry(d?.payload?.country ?? null)} />
+                          <Bar
+                            dataKey="riskShare"
+                            name="High risk share"
+                            fill="#fca5a5"
+                            onClick={(d: any) => {
+                              setDrillCountry(d?.payload?.country ?? null);
+                              pushBarAnalysis("Country risk share", {
+                                country: d?.payload?.country,
+                                riskShare: d?.payload?.riskShare,
+                                suppliers: d?.payload?.suppliers,
+                                highRiskSuppliers: d?.payload?.highRiskSuppliers,
+                                scope: overviewScope,
+                              });
+                            }}
+                          />
                         </BarChart>
                       </ResponsiveContainer>
                     </CardContent>
@@ -2378,17 +2914,17 @@ export default function SupplierRiskOpsDashboard() {
                         <Table>
                           <TableHeader>
                             <TableRow>
-                              <TableHead>Supplier</TableHead>
-                              <TableHead>Risk</TableHead>
-                              <TableHead>Contract</TableHead>
-                              <TableHead className="text-right">PO (slice)</TableHead>
-                              <TableHead className="text-right">Spend (slice)</TableHead>
-                              <TableHead className="text-right">Overall spend</TableHead>
+                              <TableHead className="cursor-pointer" onClick={() => setDrillSortKey("supplier")}>Supplier</TableHead>
+                              <TableHead className="cursor-pointer" onClick={() => setDrillSortKey("risk")}>Risk</TableHead>
+                              <TableHead className="cursor-pointer" onClick={() => setDrillSortKey("contract")}>Contract</TableHead>
+                              <TableHead className="cursor-pointer text-right" onClick={() => setDrillSortKey("poSlice")}>PO (slice)</TableHead>
+                              <TableHead className="cursor-pointer text-right" onClick={() => setDrillSortKey("spendSlice")}>Spend (slice)</TableHead>
+                              <TableHead className="cursor-pointer text-right" onClick={() => setDrillSortKey("totalSpend")}>Overall spend</TableHead>
                               <TableHead>Category</TableHead>
                             </TableRow>
                           </TableHeader>
                           <TableBody>
-                            {(drillCategory ? drillSuppliers : drillSuppliersByCountry).map((s) => (
+                            {drillSuppliersSorted.map((s) => (
                               <TableRow key={s.code}>
                                 <TableCell>
                                   <div className="font-medium">{s.canonicalName}</div>
@@ -2419,6 +2955,37 @@ export default function SupplierRiskOpsDashboard() {
                             ))}
                           </TableBody>
                         </Table>
+                      </div>
+                    </CardContent>
+                  </Card>
+                ) : null}
+
+                {barAnalysis ? (
+                  <Card>
+                    <CardHeader>
+                      <CardTitle className="flex items-center justify-between text-base">
+                        <span>Bar analysis — {barAnalysis.title}</span>
+                        <Button variant="outline" size="sm" onClick={() => setBarAnalysis(null)}>
+                          Clear
+                        </Button>
+                      </CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                      <div className="grid gap-2 md:grid-cols-2">
+                        {Object.entries(barAnalysis.details).map(([key, value]) => (
+                          <div key={key} className="rounded-2xl border p-3">
+                            <div className="text-xs text-muted-foreground">{key}</div>
+                            <div className="text-sm font-medium">
+                              {typeof value === "number"
+                                ? key.toLowerCase().includes("spend")
+                                  ? fmtMoney(value)
+                                  : key.toLowerCase().includes("share")
+                                    ? `${Math.round(value * 100)}%`
+                                    : value
+                                : String(value)}
+                            </div>
+                          </div>
+                        ))}
                       </div>
                     </CardContent>
                   </Card>
@@ -2509,10 +3076,57 @@ export default function SupplierRiskOpsDashboard() {
 
                     <Separator className="my-3" />
 
+                    <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-red-200 bg-red-50 p-3">
+                      <div>
+                        <div className="text-sm font-medium">Bulk mark selection</div>
+                        <div className="text-xs text-muted-foreground">
+                          Selected {selectedSupplierCodes.size} suppliers. Choose parameters and apply.
+                        </div>
+                      </div>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <Select value={bulkRisk} onValueChange={(v: any) => setBulkRisk(v)}>
+                          <SelectTrigger className="w-[150px]">
+                            <SelectValue placeholder="Risk" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="High">High</SelectItem>
+                            <SelectItem value="Non-risk">Non-risk</SelectItem>
+                            <SelectItem value="Unknown">Unknown</SelectItem>
+                          </SelectContent>
+                        </Select>
+                        <Select value={bulkEvaluated} onValueChange={(v: any) => setBulkEvaluated(v)}>
+                          <SelectTrigger className="w-[170px]">
+                            <SelectValue placeholder="Evaluated" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="Evaluated">Evaluated</SelectItem>
+                            <SelectItem value="Not evaluated">Not evaluated</SelectItem>
+                          </SelectContent>
+                        </Select>
+                        <Button
+                          variant="destructive"
+                          className="gap-2 bg-red-600 text-white hover:bg-red-700"
+                          onClick={applySelectedBulkMark}
+                        >
+                          Set As
+                        </Button>
+                        <Button variant="outline" onClick={clearSelectedSuppliers}>
+                          Clear
+                        </Button>
+                      </div>
+                    </div>
+
                     <div className="max-h-[560px] overflow-auto rounded-2xl border">
                       <Table>
                         <TableHeader>
                           <TableRow>
+                            <TableHead className="w-[48px] text-center">
+                              <input
+                                type="checkbox"
+                                checked={supplierFiltered.length > 0 && supplierFiltered.every((s) => selectedSupplierCodes.has(s.code))}
+                                onChange={(e) => toggleAllSuppliersInView(e.target.checked)}
+                              />
+                            </TableHead>
                             <TableHead>Supplier</TableHead>
                             <TableHead>Risk</TableHead>
                             <TableHead>Evaluated</TableHead>
@@ -2526,6 +3140,13 @@ export default function SupplierRiskOpsDashboard() {
                         <TableBody>
                           {supplierFiltered.map((s) => (
                             <TableRow key={s.code}>
+                              <TableCell className="text-center">
+                                <input
+                                  type="checkbox"
+                                  checked={selectedSupplierCodes.has(s.code)}
+                                  onChange={() => toggleSupplierSelection(s.code)}
+                                />
+                              </TableCell>
                               <TableCell className="min-w-[280px]">
                                 <div className="font-medium">{s.canonicalName}</div>
                                 <div className="text-xs text-muted-foreground">{s.code}</div>
@@ -2618,6 +3239,36 @@ export default function SupplierRiskOpsDashboard() {
                                                   <SelectItem value="High">High</SelectItem>
                                                   <SelectItem value="Non-risk">Non-risk</SelectItem>
                                                   <SelectItem value="Unknown">Unknown</SelectItem>
+                                                </SelectContent>
+                                              </Select>
+                                            </div>
+
+                                            <div className="flex items-center justify-between">
+                                              <div>
+                                                <div className="text-sm font-medium">Evaluated</div>
+                                                <div className="text-xs text-muted-foreground">Override evaluation status.</div>
+                                              </div>
+                                              <Select
+                                                value={
+                                                  db.overrides[s.code]?.evaluated === undefined
+                                                    ? "auto"
+                                                    : db.overrides[s.code]?.evaluated
+                                                      ? "true"
+                                                      : "false"
+                                                }
+                                                onValueChange={(v: any) =>
+                                                  setSupplierOverride(s.code, {
+                                                    evaluated: v === "auto" ? undefined : v === "true",
+                                                  })
+                                                }
+                                              >
+                                                <SelectTrigger className="w-[160px]">
+                                                  <SelectValue />
+                                                </SelectTrigger>
+                                                <SelectContent>
+                                                  <SelectItem value="auto">Auto</SelectItem>
+                                                  <SelectItem value="true">Evaluated</SelectItem>
+                                                  <SelectItem value="false">Not evaluated</SelectItem>
                                                 </SelectContent>
                                               </Select>
                                             </div>
@@ -2840,21 +3491,21 @@ export default function SupplierRiskOpsDashboard() {
                     <CardContent>
                       <div className="max-h-[360px] overflow-auto rounded-2xl border">
                         <Table>
-                          <TableHeader>
-                            <TableRow>
-                              <TableHead>Category</TableHead>
-                              <TableHead className="text-right">Suppliers</TableHead>
-                              <TableHead className="text-right">High risk</TableHead>
-                              <TableHead className="text-right">Risk share</TableHead>
-                              <TableHead className="text-right">Spend</TableHead>
-                            </TableRow>
-                          </TableHeader>
-                          <TableBody>
-                            {categoryMetrics.map((c) => (
-                              <TableRow key={c.category}>
-                                <TableCell className="min-w-[240px]">{c.category}</TableCell>
-                                <TableCell className="text-right">{c.suppliers}</TableCell>
-                                <TableCell className="text-right">{c.highRiskSuppliers}</TableCell>
+                        <TableHeader>
+                          <TableRow>
+                            <TableHead className="cursor-pointer" onClick={() => setCategorySortKey("category")}>Category</TableHead>
+                            <TableHead className="cursor-pointer text-right" onClick={() => setCategorySortKey("suppliers")}>Suppliers</TableHead>
+                            <TableHead className="cursor-pointer text-right" onClick={() => setCategorySortKey("highRisk")}>High risk</TableHead>
+                            <TableHead className="cursor-pointer text-right" onClick={() => setCategorySortKey("riskShare")}>Risk share</TableHead>
+                            <TableHead className="cursor-pointer text-right" onClick={() => setCategorySortKey("spend")}>Spend</TableHead>
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {categoryMetricsSorted.map((c) => (
+                            <TableRow key={c.category}>
+                              <TableCell className="min-w-[240px]">{c.category}</TableCell>
+                              <TableCell className="text-right">{c.suppliers}</TableCell>
+                              <TableCell className="text-right">{c.highRiskSuppliers}</TableCell>
                                 <TableCell className="text-right">{Math.round(c.riskShare * 100)}%</TableCell>
                                 <TableCell className="text-right font-medium">{fmtMoney(c.totalSpend)}</TableCell>
                               </TableRow>
@@ -3177,7 +3828,12 @@ export default function SupplierRiskOpsDashboard() {
 
                                 <div className="mt-3 grid gap-2 md:grid-cols-2">
                                   {d.candidates.map((c) => (
-                                    <div key={c.name} className="flex items-center justify-between gap-2 rounded-2xl border p-3">
+                                    <div
+                                      key={c.name}
+                                      className={`flex items-center justify-between gap-2 rounded-2xl border p-3 ${
+                                        c.name === d.recommended ? "bg-green-50" : "bg-slate-100"
+                                      }`}
+                                    >
                                       <div>
                                         <div className="font-medium">{c.name}</div>
                                         <div className="text-xs text-muted-foreground">Seen {c.count}×</div>
@@ -3306,6 +3962,38 @@ export default function SupplierRiskOpsDashboard() {
 
                     <Card>
                       <CardContent className="p-4">
+                        <div className="flex items-center justify-between">
+                          <div>
+                            <div className="text-sm font-medium">Set evaluated status</div>
+                            <div className="text-xs text-muted-foreground">Manual evaluation override</div>
+                          </div>
+                          <Select value={bulkEvaluated} onValueChange={(v: any) => setBulkEvaluated(v)}>
+                            <SelectTrigger className="w-[200px]">
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="Evaluated">Evaluated</SelectItem>
+                              <SelectItem value="Not evaluated">Not evaluated</SelectItem>
+                            </SelectContent>
+                          </Select>
+                        </div>
+                        {bulkEvaluatedPreview ? (
+                          <div className="mt-2 text-xs text-muted-foreground">
+                            Found {bulkEvaluatedPreview.found.length} • Changes {bulkEvaluatedPreview.changes.length} • Not found {bulkEvaluatedPreview.notFound.length}
+                          </div>
+                        ) : (
+                          <div className="mt-2 text-xs text-muted-foreground">Paste codes to generate a change preview.</div>
+                        )}
+                        <div className="mt-3 flex justify-end">
+                          <Button className="gap-2" variant="secondary" onClick={() => bulkApplyEvaluated()}>
+                            <RefreshCw className="h-4 w-4" /> Apply
+                          </Button>
+                        </div>
+                      </CardContent>
+                    </Card>
+
+                    <Card>
+                      <CardContent className="p-4">
                         <div>
                           <div className="text-sm font-medium">Set canonical name</div>
                           <div className="text-xs text-muted-foreground">Use this to unify name across the database.</div>
@@ -3374,6 +4062,93 @@ export default function SupplierRiskOpsDashboard() {
                           </Button>
                           <Button className="gap-2" onClick={applyCategoryFastAction}>
                             <RefreshCw className="h-4 w-4" /> Apply
+                          </Button>
+                        </div>
+                      </CardContent>
+                    </Card>
+
+                    <Card>
+                      <CardContent className="p-4">
+                        <div className="text-sm font-medium">Search by name (partial match)</div>
+                        <div className="text-xs text-muted-foreground">Find suppliers by name or code, then bulk mark them.</div>
+                        <Input
+                          value={bulkNameQuery}
+                          onChange={(e) => setBulkNameQuery(e.target.value)}
+                          placeholder="Type supplier name or code fragment"
+                          className="mt-2"
+                        />
+                        <div className="mt-3 max-h-[220px] overflow-auto rounded-xl border">
+                          <Table>
+                            <TableHeader>
+                              <TableRow>
+                                <TableHead className="w-[48px] text-center"></TableHead>
+                                <TableHead>Supplier</TableHead>
+                                <TableHead>Risk</TableHead>
+                                <TableHead>Evaluated</TableHead>
+                              </TableRow>
+                            </TableHeader>
+                            <TableBody>
+                              {bulkNameMatches.length === 0 ? (
+                                <TableRow>
+                                  <TableCell colSpan={4} className="py-6 text-center text-sm text-muted-foreground">
+                                    Start typing to see matches.
+                                  </TableCell>
+                                </TableRow>
+                              ) : (
+                                bulkNameMatches.map((s) => (
+                                  <TableRow key={s.code}>
+                                    <TableCell className="text-center">
+                                      <input
+                                        type="checkbox"
+                                        checked={bulkNameSelected.has(s.code)}
+                                        onChange={() => toggleBulkNameSelection(s.code)}
+                                      />
+                                    </TableCell>
+                                    <TableCell>
+                                      <div className="font-medium">{s.canonicalName}</div>
+                                      <div className="text-xs text-muted-foreground">{s.code}</div>
+                                    </TableCell>
+                                    <TableCell>
+                                      <RiskBadge risk={s.risk} />
+                                    </TableCell>
+                                    <TableCell>
+                                      {s.evaluated ? <Badge variant="secondary">Yes</Badge> : <Badge variant="outline">No</Badge>}
+                                    </TableCell>
+                                  </TableRow>
+                                ))
+                              )}
+                            </TableBody>
+                          </Table>
+                        </div>
+                        <div className="mt-3 flex flex-wrap items-center gap-2">
+                          <Select value={bulkRisk} onValueChange={(v: any) => setBulkRisk(v)}>
+                            <SelectTrigger className="w-[150px]">
+                              <SelectValue placeholder="Risk" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="High">High</SelectItem>
+                              <SelectItem value="Non-risk">Non-risk</SelectItem>
+                              <SelectItem value="Unknown">Unknown</SelectItem>
+                            </SelectContent>
+                          </Select>
+                          <Select value={bulkEvaluated} onValueChange={(v: any) => setBulkEvaluated(v)}>
+                            <SelectTrigger className="w-[180px]">
+                              <SelectValue placeholder="Evaluated" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="Evaluated">Evaluated</SelectItem>
+                              <SelectItem value="Not evaluated">Not evaluated</SelectItem>
+                            </SelectContent>
+                          </Select>
+                          <Button
+                            className="gap-2"
+                            variant="destructive"
+                            onClick={applyBulkNameSelection}
+                          >
+                            Set As
+                          </Button>
+                          <Button variant="outline" onClick={clearBulkNameSelection}>
+                            Clear selection
                           </Button>
                         </div>
                       </CardContent>
