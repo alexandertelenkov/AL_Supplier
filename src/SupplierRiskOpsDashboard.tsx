@@ -1286,6 +1286,7 @@ export default function SupplierRiskOpsDashboard() {
   const [actor, setActor] = useState("Hero");
   const [activeTab, setActiveTab] = useState("overview");
   const [globalCountry, setGlobalCountry] = useState("Overall");
+  const [overviewScope, setOverviewScope] = useState("Overall");
 
   // filters
   const [q, setQ] = useState("");
@@ -1337,6 +1338,7 @@ export default function SupplierRiskOpsDashboard() {
   const [taskNote, setTaskNote] = useState("");
   const [taskSupplierCode, setTaskSupplierCode] = useState("");
 
+  const [selectedSupplierCodes, setSelectedSupplierCodes] = useState<Set<string>>(new Set());
   const [selectedSuppliers, setSelectedSuppliers] = useState<Set<string>>(new Set());
   const [bulkMarkRisk, setBulkMarkRisk] = useState<BulkRiskChoice>("No change");
   const [bulkMarkEvaluated, setBulkMarkEvaluated] = useState<BulkEvalChoice>("No change");
