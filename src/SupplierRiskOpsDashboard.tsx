@@ -1584,7 +1584,7 @@ export default function SupplierRiskOpsDashboard() {
     for (const s of suppliers) m.set(s.code, s);
     return m;
   }, [suppliers]);
-  const bulkNameMatches = useMemo(() => {
+  const bulkNameMatchesList = useMemo(() => {
     const needle = bulkNameQuery.trim().toLowerCase();
     if (!needle) return [];
     return suppliers
@@ -2003,6 +2003,38 @@ export default function SupplierRiskOpsDashboard() {
     setActiveTab("suppliers");
   }
 
+  const worklistSortedList = useMemo(() => {
+    const sorted = [...worklist];
+    const dir = fastQueueSort.includes("Asc") ? 1 : -1;
+    if (fastQueueSort.startsWith("Spend")) {
+      sorted.sort((a, b) => (a.totalSpend - b.totalSpend) * dir);
+    } else {
+      sorted.sort((a, b) => a.canonicalName.localeCompare(b.canonicalName) * dir);
+    }
+    return sorted;
+  }, [worklist, fastQueueSort]);
+
+  const drillRowsSorted = useMemo(() => {
+    const rows = (drillCategory ? drillSuppliers : drillSuppliersByCountry) as any[];
+    const sorted = [...rows];
+    const dir = drillSortState.dir === "asc" ? 1 : -1;
+    const orderRisk: Record<RiskLevel, number> = { High: 3, "Non-risk": 2, Unknown: 1 };
+    sorted.sort((a, b) => {
+      const key = drillSortState.key;
+      if (key === "risk") return (orderRisk[a.risk] - orderRisk[b.risk]) * dir;
+      if (key === "contractStatus") return String(a.contractStatus).localeCompare(String(b.contractStatus)) * dir;
+      if (key === "canonicalName") return String(a.canonicalName).localeCompare(String(b.canonicalName)) * dir;
+      if (key === "categories") return String(a.categories?.[0] ?? "").localeCompare(String(b.categories?.[0] ?? "")) * dir;
+      return (Number(a[key] ?? 0) - Number(b[key] ?? 0)) * dir;
+    });
+    return sorted;
+  }, [drillCategory, drillSuppliers, drillSuppliersByCountry, drillSortState]);
+
+  function jumpToSupplier(code: string) {
+    setQ(code);
+    setActiveTab("suppliers");
+  }
+
   function pushLog(entry: Omit<LogEntry, "id" | "ts" | "actor">) {
     const e: LogEntry = { id: uuid(), ts: nowIso(), actor, ...entry };
     setDB((prev) => ({ ...prev, log: [e, ...prev.log] }));
@@ -2193,7 +2225,7 @@ export default function SupplierRiskOpsDashboard() {
     );
   }
 
-  function toggleSupplierSelection(code: string) {
+  function handleToggleSupplierSelection(code: string) {
     setSelectedSuppliers((prev) => {
       const next = new Set(prev);
       if (next.has(code)) next.delete(code);
@@ -2216,11 +2248,11 @@ export default function SupplierRiskOpsDashboard() {
     });
   }
 
-  function clearSelectedSuppliers() {
+  function handleClearSelectedSuppliers() {
     setSelectedSuppliers(new Set());
   }
 
-  function toggleBulkNameSelection(code: string) {
+  function handleToggleBulkNameSelection(code: string) {
     setBulkNameSelected((prev) => {
       const next = new Set(prev);
       if (next.has(code)) next.delete(code);
@@ -2229,7 +2261,7 @@ export default function SupplierRiskOpsDashboard() {
     });
   }
 
-  function applyBulkNameSelection() {
+  function handleApplyBulkNameSelection() {
     const codes = uniq([...parseCodes(bulkCodes), ...Array.from(bulkNameSelected)]);
     setBulkCodes(codes.join("\n"));
     setBulkNameSelected(new Set());
@@ -3171,7 +3203,7 @@ export default function SupplierRiskOpsDashboard() {
                             </TableRow>
                           </TableHeader>
                           <TableBody>
-                            {worklistSorted.slice(0, 12).map((s) => (
+                            {worklistSortedList.slice(0, 12).map((s) => (
                               <TableRow key={s.code}>
                                 <TableCell>
                                   <button
@@ -3708,7 +3740,7 @@ export default function SupplierRiskOpsDashboard() {
                             </TableRow>
                           </TableHeader>
                           <TableBody>
-                            {drillRows.map((s) => (
+                            {drillRowsSorted.map((s) => (
                               <TableRow key={s.code}>
                                 <TableCell>
                                   <div className="font-medium">{s.canonicalName}</div>
@@ -3832,7 +3864,7 @@ export default function SupplierRiskOpsDashboard() {
                           >
                             Set As
                           </Button>
-                          <Button variant="outline" onClick={clearSelectedSuppliers}>
+                          <Button variant="outline" onClick={handleClearSelectedSuppliers}>
                             Clear selection
                           </Button>
                         </div>
@@ -3974,7 +4006,7 @@ export default function SupplierRiskOpsDashboard() {
                                 <input
                                   type="checkbox"
                                   checked={selectedSuppliers.has(s.code)}
-                                  onChange={() => toggleSupplierSelection(s.code)}
+                                  onChange={() => handleToggleSupplierSelection(s.code)}
                                 />
                               </TableCell>
                               <TableCell className="min-w-[280px]">
@@ -4954,7 +4986,7 @@ export default function SupplierRiskOpsDashboard() {
                           placeholder="Search supplier name or code"
                           className="mt-2"
                         />
-                        {bulkNameMatches.length ? (
+                        {bulkNameMatchesList.length ? (
                           <>
                             <div className="mt-2 max-h-[220px] overflow-auto rounded-xl border">
                               <Table>
@@ -4967,13 +4999,13 @@ export default function SupplierRiskOpsDashboard() {
                                   </TableRow>
                                 </TableHeader>
                                 <TableBody>
-                                  {bulkNameMatches.map((s) => (
+                                  {bulkNameMatchesList.map((s) => (
                                     <TableRow key={s.code}>
                                       <TableCell>
                                         <input
                                           type="checkbox"
                                           checked={bulkNameSelected.has(s.code)}
-                                          onChange={() => toggleBulkNameSelection(s.code)}
+                                          onChange={() => handleToggleBulkNameSelection(s.code)}
                                         />
                                       </TableCell>
                                       <TableCell className="font-medium">{s.canonicalName}</TableCell>
@@ -4987,7 +5019,7 @@ export default function SupplierRiskOpsDashboard() {
                               </Table>
                             </div>
                             <div className="mt-2 flex justify-end">
-                              <Button variant="outline" onClick={applyBulkNameSelection} disabled={bulkNameSelected.size === 0}>
+                              <Button variant="outline" onClick={handleApplyBulkNameSelection} disabled={bulkNameSelected.size === 0}>
                                 Add selected to bulk list
                               </Button>
                             </div>
