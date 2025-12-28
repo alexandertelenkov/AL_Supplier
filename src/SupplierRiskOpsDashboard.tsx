@@ -10,7 +10,6 @@ import {
   Database,
   Download,
   FileUp,
-  Palette,
   RefreshCw,
   Search,
   Settings,
@@ -74,6 +73,13 @@ import {
 
 type RiskLevel = "High" | "Non-risk" | "Unknown";
 type ContractStatus = "Not sent" | "Sent" | "Signed" | "Review" | "Not compliant" | "N/A";
+type BarFillStyle = "solid" | "diagonal" | "dots";
+type BarPaletteKey = "country" | "category" | "riskLevel" | "contractStatus" | "funnelStage";
+type BarChartSettings = {
+  fillStyle: BarFillStyle;
+  palettes: Record<BarPaletteKey, Record<string, string>>;
+  rulesNote?: string;
+};
 
 type FactRow = {
   supplierName?: string;
@@ -108,10 +114,11 @@ type AppSettings = {
   scopeSpendThreshold: number;
   /** Data-quality: flag suppliers with missing subFamily when abs spend exceeds this */
   missingSubfamilySpendThreshold: number;
-  /** UI palette for country charts */
-  countryPalette: Record<string, string>;
-  /** Fill style for country bars */
-  countryBarFillStyle: "solid" | "diagonal" | "dots";
+  /** UI palette + styling for bar charts */
+  barChartSettings: BarChartSettings;
+  /** Bulk contact defaults for outreach */
+  bulkContactName: string;
+  bulkContactEmail: string;
 };
 
 type UndoBatch = {
@@ -129,6 +136,8 @@ type CategoryRule = {
   defaultRisk: RiskLevel; // policy layer
   comment?: string;
 };
+
+type WorkSheet = any;
 
 type SupplierMaster = {
   code: string;
@@ -198,6 +207,13 @@ type Task = {
   title: string;
   note?: string;
   supplierCode?: string;
+  supplierName?: string;
+  contactName?: string;
+  contactEmail?: string;
+  createdAt: string; // ISO
+  dueDate?: string; // YYYY-MM-DD
+  kind?: "general" | "email";
+  followUpStage?: "initial" | "followup" | "urgent";
   status: "todo" | "done";
 };
 
@@ -211,13 +227,40 @@ type BulkEvalChoice = EvaluationChoice | "No change";
 
 const LS_KEY = "supplier-risk-ops-dashboard:v1";
 
+const RISK_LEVEL_OPTIONS: RiskLevel[] = ["High", "Non-risk", "Unknown"];
+const CONTRACT_STATUS_OPTIONS: ContractStatus[] = ["Not sent", "Sent", "Signed", "Review", "Not compliant", "N/A"];
+const DEFAULT_RISK_PALETTE: Record<RiskLevel, string> = {
+  High: "#fca5a5",
+  "Non-risk": "#86efac",
+  Unknown: "#e5e7eb",
+};
+const DEFAULT_CONTRACT_PALETTE: Record<ContractStatus, string> = {
+  "Not sent": "#fcd34d",
+  Sent: "#fde68a",
+  Signed: "#86efac",
+  Review: "#93c5fd",
+  "Not compliant": "#f87171",
+  "N/A": "#e5e7eb",
+};
+
 const DEFAULT_SETTINGS: AppSettings = {
   dominanceShareThreshold: 0.8,
   multiCategorySecondShareThreshold: 0.12,
   scopeSpendThreshold: 1_000_000,
   missingSubfamilySpendThreshold: 250_000,
-  countryPalette: {},
-  countryBarFillStyle: "solid",
+  barChartSettings: {
+    fillStyle: "solid",
+    palettes: {
+      country: {},
+      category: {},
+      riskLevel: { ...DEFAULT_RISK_PALETTE },
+      contractStatus: { ...DEFAULT_CONTRACT_PALETTE },
+      funnelStage: {},
+    },
+    rulesNote: "",
+  },
+  bulkContactName: "",
+  bulkContactEmail: "",
 };
 
 const DEMO_FACT_ROWS: FactRow[] = [
@@ -461,6 +504,14 @@ function normalizeContractStatus(raw: string): ContractStatus {
   return "Not sent";
 }
 
+function normYesNo(raw: string) {
+  const s = safeStr(raw).trim().toLowerCase();
+  if (!s) return "";
+  if (s.startsWith("y")) return "YES";
+  if (s.startsWith("n")) return "NO";
+  return s.toUpperCase();
+}
+
 function riskFromFlags(flags: (string | null | undefined)[]): RiskLevel {
   const normalized = flags
     .map((x) => safeStr(x))
@@ -490,6 +541,47 @@ function evaluatedFromFlags(flags: (string | null | undefined)[]) {
   return normalized.every((x) => x === "YES" || x === "NO");
 }
 
+type LegacySettings = Partial<AppSettings> & {
+  countryPalette?: Record<string, string>;
+  countryBarFillStyle?: BarFillStyle;
+};
+
+function addDays(date: string, days: number) {
+  const d = new Date(`${date}T00:00:00`);
+  d.setDate(d.getDate() + days);
+  return d.toISOString().slice(0, 10);
+}
+
+function normalizeSettings(settings?: LegacySettings): AppSettings {
+  const merged = { ...DEFAULT_SETTINGS, ...(settings ?? {}) };
+  const legacyPalette = settings?.countryPalette;
+  const legacyFillStyle = settings?.countryBarFillStyle;
+  const barChartSettings: BarChartSettings = {
+    ...DEFAULT_SETTINGS.barChartSettings,
+    ...merged.barChartSettings,
+    palettes: {
+      ...DEFAULT_SETTINGS.barChartSettings.palettes,
+      ...(merged.barChartSettings?.palettes ?? {}),
+    },
+  };
+
+  if (legacyPalette) {
+    barChartSettings.palettes.country = {
+      ...barChartSettings.palettes.country,
+      ...legacyPalette,
+    };
+  }
+
+  if (legacyFillStyle) {
+    barChartSettings.fillStyle = legacyFillStyle;
+  }
+
+  return {
+    ...merged,
+    barChartSettings,
+  };
+}
+
 function loadDB(): PersistedDB {
   try {
     const raw = localStorage.getItem(LS_KEY);
@@ -501,7 +593,7 @@ function loadDB(): PersistedDB {
       factRows: Array.isArray(parsed.factRows) ? parsed.factRows : [],
       overrides: parsed.overrides ?? {},
       categoryRules: Array.isArray(parsed.categoryRules) ? parsed.categoryRules : [],
-      settings: { ...DEFAULT_SETTINGS, ...(parsed.settings ?? {}) },
+      settings: normalizeSettings(parsed.settings ?? {}),
       tasks: Array.isArray(parsed.tasks) ? parsed.tasks : [],
       log: Array.isArray(parsed.log) ? parsed.log : [],
       lastUndo: parsed.lastUndo ?? null,
@@ -521,7 +613,7 @@ function saveDB(db: PersistedDB) {
 
 type SheetMatrix = any[][];
 
-function sheetToMatrix(ws: XLSX.WorkSheet): SheetMatrix {
+function sheetToMatrix(ws: WorkSheet): SheetMatrix {
   return XLSX.utils.sheet_to_json(ws, { header: 1, defval: null }) as any[][];
 }
 
@@ -574,7 +666,7 @@ function getCellByAliases(row: any[], headerMap: Record<string, number>, aliases
   return null;
 }
 
-function parseFactSheet(ws: XLSX.WorkSheet, requiredForHeaderDetection: string[]): FactRow[] {
+function parseFactSheet(ws: WorkSheet, requiredForHeaderDetection: string[]): FactRow[] {
   const matrix = sheetToMatrix(ws);
   const headerIdx = findHeaderRowIndex(matrix, requiredForHeaderDetection);
   const headerRow = matrix[headerIdx] ?? [];
@@ -611,7 +703,7 @@ function parseFactSheet(ws: XLSX.WorkSheet, requiredForHeaderDetection: string[]
 
 // Specialized parser: Risk Evaluation Overview has TWO risk columns ("Risk" and "RIsk").
 // We explicitly prefer the final one ("RIsk"), because the "Risk" column often contains "Evaluating".
-function parseRiskEvalOverview(ws: XLSX.WorkSheet): FactRow[] {
+function parseRiskEvalOverview(ws: WorkSheet): FactRow[] {
   const matrix = sheetToMatrix(ws);
   const headerIdx = findHeaderRowIndex(matrix, ["Supplier Name", "Supplier Code", "RIsk", "Europe Catman category", "FAMILY NAME", "Spend", "# PO"]);
   const headerRow = matrix[headerIdx] ?? [];
@@ -675,7 +767,7 @@ function mergeCategoryRules(existing: CategoryRule[], incoming: CategoryRule[]) 
   return merged;
 }
 
-function parseFamilyRiskRulesFromSettings(ws: XLSX.WorkSheet): CategoryRule[] {
+function parseFamilyRiskRulesFromSettings(ws: WorkSheet): CategoryRule[] {
   // Settings contains a "Table 2" with columns: FAMILY NAME.1 + Risk (Yes/No/#REF!)
   const matrix = sheetToMatrix(ws);
   const headerIdx = findHeaderRowIndex(matrix, ["family name", "risk"]);
@@ -1337,6 +1429,10 @@ export default function SupplierRiskOpsDashboard() {
   const [taskTitle, setTaskTitle] = useState("");
   const [taskNote, setTaskNote] = useState("");
   const [taskSupplierCode, setTaskSupplierCode] = useState("");
+  const [taskSupplierName, setTaskSupplierName] = useState("");
+  const [taskContactName, setTaskContactName] = useState("");
+  const [taskContactEmail, setTaskContactEmail] = useState("");
+  const [taskDueDate, setTaskDueDate] = useState(() => new Date().toISOString().slice(0, 10));
 
   const [selectedSupplierCodes, setSelectedSupplierCodes] = useState<Set<string>>(new Set());
   const [selectedSuppliers, setSelectedSuppliers] = useState<Set<string>>(new Set());
@@ -1396,8 +1492,60 @@ export default function SupplierRiskOpsDashboard() {
   }, [issues, issueTypeFilter, issueSeverityFilter]);
   const categoryMetrics = useMemo(() => buildCategoryMetrics(scopedFactRows, suppliers), [scopedFactRows, suppliers]);
   const countryMetrics = useMemo(() => buildCountryMetrics(scopedFactRows, suppliers), [scopedFactRows, suppliers]);
-  const countryPalette = db.settings.countryPalette ?? {};
+  const barChartSettings = db.settings.barChartSettings;
   const categories = useMemo(() => ["All", ...uniq(categoryMetrics.map((c) => c.category)).sort()], [categoryMetrics]);
+  const paletteCountries = useMemo(() => availableCountries.filter((c) => c !== "Overall"), [availableCountries]);
+  const paletteCategories = useMemo(() => categories.filter((c) => c !== "All"), [categories]);
+  const riskyCategoryChart = useMemo(
+    () =>
+      [...categoryMetrics]
+        .filter((c) => c.suppliers >= 15)
+        .sort((a, b) => b.riskShare - a.riskShare)
+      .slice(0, 12),
+    [categoryMetrics]
+  );
+  const candidateStats = useMemo(() => {
+    const map = new Map<
+      string,
+      {
+        rows: number;
+        totalSpend: number;
+        totalPO: number;
+        minYear?: number;
+        maxYear?: number;
+      }
+    >();
+    for (const row of db.factRows) {
+      const code = normCode(row.supplierCode);
+      const name = safeStr(row.supplierName);
+      if (!code || !name) continue;
+      const key = `${code}||${name}`;
+      const entry = map.get(key) ?? { rows: 0, totalSpend: 0, totalPO: 0 };
+      entry.rows += 1;
+      entry.totalSpend += Math.abs(row.spend ?? 0);
+      entry.totalPO += row.po ?? 0;
+      const year = Number(row.year);
+      if (Number.isFinite(year)) {
+        entry.minYear = entry.minYear === undefined ? year : Math.min(entry.minYear, year);
+        entry.maxYear = entry.maxYear === undefined ? year : Math.max(entry.maxYear, year);
+      }
+      map.set(key, entry);
+    }
+    return map;
+  }, [db.factRows]);
+  const bulkContactName = db.settings.bulkContactName;
+  const bulkContactEmail = db.settings.bulkContactEmail;
+
+  const redIgnoranceAlerts = useMemo(() => {
+    const today = new Date().toISOString().slice(0, 10);
+    return db.tasks.filter((t) => {
+      if (t.kind !== "email") return false;
+      const due = t.dueDate ?? t.date;
+      if (!due) return false;
+      if (t.followUpStage === "urgent") return true;
+      return t.followUpStage === "followup" && due < today && t.status !== "done";
+    });
+  }, [db.tasks]);
 
   const categoryMetricsSorted = useMemo(() => {
     const dir = categoryTableSort.dir === "asc" ? 1 : -1;
@@ -1504,13 +1652,14 @@ export default function SupplierRiskOpsDashboard() {
     const signed = overviewSuppliers.filter((s) => s.contractStatus === "Signed").length;
     const sent = overviewSuppliers.filter((s) => s.contractStatus === "Sent").length;
     const notEval = overviewSuppliers.filter((s) => !s.evaluated).length;
+    const notEvalHighRisk = overviewSuppliers.filter((s) => !s.evaluated && s.risk === "High").length;
     const completion = high ? signed / high : 0;
     const dqDup = overviewIssues.filter((i) => i.type === "CODE_MANY_NAMES").length;
     const unknownInScope = overviewIssueBuckets.RISK_UNKNOWN_IN_SCOPE;
     const multiCat = overviewIssueBuckets.MULTI_CATEGORY_EXPOSURE;
     const nameMany = overviewIssueBuckets.NAME_MANY_CODES;
     const qualityTotal = overviewIssues.length;
-    return { total, high, signed, sent, notEval, completion, dqDup, unknownInScope, multiCat, nameMany, qualityTotal };
+    return { total, high, signed, sent, notEval, notEvalHighRisk, completion, dqDup, unknownInScope, multiCat, nameMany, qualityTotal };
   }, [overviewSuppliers, overviewIssues, overviewIssueBuckets]);
 
   const funnelData = useMemo(() => {
@@ -1525,6 +1674,7 @@ export default function SupplierRiskOpsDashboard() {
       { stage: "Pending", value: pending },
     ];
   }, [overviewSuppliers]);
+  const funnelStages = useMemo(() => funnelData.map((stage) => stage.stage), [funnelData]);
 
   const topRiskyByCount = useMemo(() => {
     return [...categoryMetrics]
@@ -1885,7 +2035,7 @@ export default function SupplierRiskOpsDashboard() {
     const orderRisk: Record<RiskLevel, number> = { High: 3, "Non-risk": 2, Unknown: 1 };
     sorted.sort((a, b) => {
       const key = drillSortState.key;
-      if (key === "risk") return (orderRisk[a.risk] - orderRisk[b.risk]) * dir;
+      if (key === "risk") return (orderRisk[a.risk as RiskLevel] - orderRisk[b.risk as RiskLevel]) * dir;
       if (key === "contractStatus") return String(a.contractStatus).localeCompare(String(b.contractStatus)) * dir;
       if (key === "canonicalName") return String(a.canonicalName).localeCompare(String(b.canonicalName)) * dir;
       if (key === "categories") return String(a.categories?.[0] ?? "").localeCompare(String(b.categories?.[0] ?? "")) * dir;
@@ -2028,7 +2178,7 @@ export default function SupplierRiskOpsDashboard() {
         factRows: Array.isArray((parsed as any).factRows) ? (parsed as any).factRows : [],
         overrides: (parsed as any).overrides ?? {},
         categoryRules: Array.isArray((parsed as any).categoryRules) ? (parsed as any).categoryRules : [],
-        settings: { ...DEFAULT_SETTINGS, ...(((parsed as any).settings ?? {}) as Partial<AppSettings>) },
+        settings: normalizeSettings(((parsed as any).settings ?? {}) as LegacySettings),
         tasks: Array.isArray((parsed as any).tasks) ? (parsed as any).tasks : [],
         log: Array.isArray((parsed as any).log) ? (parsed as any).log : [],
         lastUndo: (parsed as any).lastUndo ?? null,
@@ -2566,47 +2716,79 @@ export default function SupplierRiskOpsDashboard() {
     });
   }
 
-  function setAppSettings(patch: Partial<AppSettings>) {
-    setDB((prev) => ({ ...prev, settings: { ...prev.settings, ...patch } }));
-    pushLog({ type: "SETTINGS", summary: "Updated guardrail thresholds", details: patch });
+  type AppSettingsPatch = Omit<Partial<AppSettings>, "barChartSettings"> & {
+    barChartSettings?: Partial<BarChartSettings>;
+  };
+
+  function setAppSettings(patch: AppSettingsPatch) {
+    setDB((prev) => {
+      const nextSettings: AppSettings = {
+        ...prev.settings,
+        ...patch,
+        barChartSettings: {
+          ...prev.settings.barChartSettings,
+          ...(patch.barChartSettings ?? {}),
+          palettes: {
+            ...prev.settings.barChartSettings.palettes,
+            ...(patch.barChartSettings?.palettes ?? {}),
+          },
+        },
+      };
+      return { ...prev, settings: nextSettings };
+    });
+    pushLog({ type: "SETTINGS", summary: "Updated app settings", details: patch });
   }
 
-  function updateCountryPalette(country: string, color: string) {
-    const key = safeStr(country);
+  function updateBarPalette(kind: BarPaletteKey, keyRaw: string, color: string) {
+    const key = safeStr(keyRaw);
     if (!key) return;
-    const next = { ...(db.settings.countryPalette ?? {}) };
+    const next = { ...(db.settings.barChartSettings.palettes[kind] ?? {}) };
     if (!color) delete next[key];
     else next[key] = color;
-    setAppSettings({ countryPalette: next });
+    setAppSettings({
+      barChartSettings: {
+        palettes: {
+          ...db.settings.barChartSettings.palettes,
+          [kind]: next,
+        },
+      },
+    });
   }
 
-  function clearCountryPalette(country: string) {
-    const key = safeStr(country);
+  function clearBarPalette(kind: BarPaletteKey, keyRaw: string) {
+    const key = safeStr(keyRaw);
     if (!key) return;
-    const next = { ...(db.settings.countryPalette ?? {}) };
+    const next = { ...(db.settings.barChartSettings.palettes[kind] ?? {}) };
     delete next[key];
-    setAppSettings({ countryPalette: next });
+    setAppSettings({
+      barChartSettings: {
+        palettes: {
+          ...db.settings.barChartSettings.palettes,
+          [kind]: next,
+        },
+      },
+    });
   }
 
-  function getCountryColor(country: string, fallback: string) {
-    return countryPalette[country] || fallback;
+  function getBarColor(kind: BarPaletteKey, key: string, fallback: string) {
+    return db.settings.barChartSettings.palettes[kind]?.[key] || fallback;
   }
 
-  function getCountryFill(country: string, fallback: string) {
-    const color = getCountryColor(country, fallback);
-    if (db.settings.countryBarFillStyle === "solid") return color;
-    return `url(#country-${slugifyKey(country)}-${db.settings.countryBarFillStyle})`;
+  function getBarFill(kind: BarPaletteKey, key: string, fallback: string) {
+    const color = getBarColor(kind, key, fallback);
+    if (db.settings.barChartSettings.fillStyle === "solid") return color;
+    return `url(#${kind}-${slugifyKey(key)}-${db.settings.barChartSettings.fillStyle})`;
   }
 
-  function renderCountryBarDefs(countries: string[], fallback: string) {
-    const style = db.settings.countryBarFillStyle;
+  function renderBarDefs(kind: BarPaletteKey, keys: string[], fallback: string) {
+    const style = db.settings.barChartSettings.fillStyle;
     if (style === "solid") return null;
-    const unique = uniq(countries);
+    const unique = uniq(keys);
     return (
       <defs>
-        {unique.map((country) => {
-          const color = getCountryColor(country, fallback);
-          const id = `country-${slugifyKey(country)}-${style}`;
+        {unique.map((key) => {
+          const color = getBarColor(kind, key, fallback);
+          const id = `${kind}-${slugifyKey(key)}-${style}`;
           if (style === "dots") {
             return (
               <pattern key={id} id={id} width="6" height="6" patternUnits="userSpaceOnUse">
@@ -2650,23 +2832,84 @@ export default function SupplierRiskOpsDashboard() {
     });
   }
 
-  function addTask() {
-    const title = safeStr(taskTitle);
-    if (!title) return;
+  function addTaskEntry(partial: Partial<Task> & { title: string }) {
     const t: Task = {
       id: uuid(),
-      date: taskDate,
-      owner: safeStr(taskOwner) || actor,
-      title,
-      note: safeStr(taskNote) || undefined,
-      supplierCode: safeStr(taskSupplierCode) || undefined,
-      status: "todo",
+      date: partial.date ?? taskDate,
+      owner: partial.owner ?? (safeStr(taskOwner) || actor),
+      title: partial.title,
+      note: safeStr(partial.note) || undefined,
+      supplierCode: safeStr(partial.supplierCode) || undefined,
+      supplierName: safeStr(partial.supplierName) || undefined,
+      contactName: safeStr(partial.contactName) || undefined,
+      contactEmail: safeStr(partial.contactEmail) || undefined,
+      createdAt: partial.createdAt ?? nowIso(),
+      dueDate: partial.dueDate ?? taskDueDate,
+      kind: partial.kind ?? "general",
+      followUpStage: partial.followUpStage,
+      status: partial.status ?? "todo",
     };
     setDB((prev) => ({ ...prev, tasks: [t, ...prev.tasks] }));
     pushLog({ type: "TASK", summary: `Task added (${t.date}): ${t.title}`, details: t });
+  }
+
+  function addTask() {
+    const title = safeStr(taskTitle);
+    if (!title) return;
+    addTaskEntry({
+      title,
+      date: taskDate,
+      note: taskNote,
+      supplierCode: taskSupplierCode,
+      supplierName: taskSupplierName,
+      contactName: taskContactName || bulkContactName,
+      contactEmail: taskContactEmail || bulkContactEmail,
+      dueDate: taskDueDate,
+      kind: "general",
+    });
     setTaskTitle("");
     setTaskNote("");
     setTaskSupplierCode("");
+    setTaskSupplierName("");
+  }
+
+  function updateTask(id: string, patch: Partial<Task>) {
+    setDB((prev) => {
+      const tasks = prev.tasks.map((t) => (t.id === id ? { ...t, ...patch } : t));
+      const updated = tasks.find((t) => t.id === id);
+      pushLog({ type: "TASK", summary: `Task updated: ${updated?.title}`, details: updated });
+      return { ...prev, tasks };
+    });
+  }
+
+  function scheduleEmailFollowUp(options: {
+    supplierCode?: string;
+    supplierName?: string;
+    contactName?: string;
+    contactEmail?: string;
+    stage: "initial" | "followup";
+  }) {
+    const baseDate = new Date().toISOString().slice(0, 10);
+    const dueDate = options.stage === "initial" ? addDays(baseDate, 14) : addDays(baseDate, 7);
+    const title =
+      options.stage === "initial"
+        ? "Follow-up: signature in 14 days"
+        : "Escalation check: signature in 7 days";
+    addTaskEntry({
+      title,
+      date: dueDate,
+      dueDate,
+      kind: "email",
+      followUpStage: options.stage,
+      supplierCode: options.supplierCode,
+      supplierName: options.supplierName,
+      contactName: options.contactName || bulkContactName,
+      contactEmail: options.contactEmail || bulkContactEmail,
+      note:
+        options.stage === "initial"
+          ? "Email sent — reminder scheduled for 14 days."
+          : "Follow-up email sent — reminder scheduled for 7 days.",
+    });
   }
 
   function toggleTask(id: string) {
@@ -2768,68 +3011,6 @@ export default function SupplierRiskOpsDashboard() {
                 </SelectContent>
               </Select>
             </div>
-            <Dialog>
-              <DialogTrigger asChild>
-                <Button variant="outline" className="gap-2">
-                  <Palette className="h-4 w-4" /> Palette
-                </Button>
-              </DialogTrigger>
-              <DialogContent className="max-w-3xl">
-                <DialogHeader>
-                  <DialogTitle>Country palette & bar styling</DialogTitle>
-                </DialogHeader>
-                <div className="text-sm text-muted-foreground">
-                  Customize colors for country charts and choose a bar fill style. Settings are stored in the exported JSON snapshot.
-                </div>
-                <div className="mt-4 grid gap-3 md:grid-cols-3">
-                  <div className="rounded-2xl border p-3">
-                    <div className="text-xs text-muted-foreground">Bar fill style</div>
-                    <Select
-                      value={db.settings.countryBarFillStyle}
-                      onValueChange={(v: any) => setAppSettings({ countryBarFillStyle: v })}
-                    >
-                      <SelectTrigger className="mt-2">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="solid">Solid</SelectItem>
-                        <SelectItem value="diagonal">Diagonal stripes</SelectItem>
-                        <SelectItem value="dots">Dots</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>
-                  <div className="rounded-2xl border p-3 md:col-span-2">
-                    <div className="text-xs text-muted-foreground">Country colors</div>
-                    <div className="mt-2 space-y-2">
-                      {availableCountries.filter((c) => c !== "Overall").map((country) => (
-                        <div key={country} className="flex items-center justify-between gap-2 rounded-xl border p-2">
-                          <div className="text-sm font-medium">{country}</div>
-                          <div className="flex items-center gap-2">
-                            <input
-                              type="color"
-                              value={getCountryColor(country, "#60a5fa")}
-                              onChange={(e) => updateCountryPalette(country, e.target.value)}
-                            />
-                            <Input
-                              value={getCountryColor(country, "#60a5fa")}
-                              onChange={(e) => updateCountryPalette(country, e.target.value)}
-                              className="h-8 w-[110px]"
-                            />
-                            <Button variant="ghost" size="sm" onClick={() => clearCountryPalette(country)}>
-                              Reset
-                            </Button>
-                          </div>
-                        </div>
-                      ))}
-                      {availableCountries.length <= 1 ? (
-                        <div className="text-xs text-muted-foreground">No countries available yet. Import data first.</div>
-                      ) : null}
-                    </div>
-                  </div>
-                </div>
-              </DialogContent>
-            </Dialog>
-
             <input
               ref={fileInputRef}
               type="file"
@@ -2920,25 +3101,230 @@ export default function SupplierRiskOpsDashboard() {
               <EmptyState title="No data loaded" subtitle="Import your XLSX tracker (recommended) or a DB snapshot (JSON)." />
             ) : (
               <>
-                <div className="flex flex-wrap items-center gap-2">
-                  <Button
-                    variant={overviewScope === "Overall" ? "default" : "outline"}
-                    onClick={() => setOverviewScope("Overall")}
-                  >
-                    Overall
-                  </Button>
-                  <Button
-                    variant={overviewScope === "Austria" ? "default" : "outline"}
-                    onClick={() => setOverviewScope("Austria")}
-                  >
-                    Austria
-                  </Button>
-                  <Button
-                    variant={overviewScope === "Switzerland" ? "default" : "outline"}
-                    onClick={() => setOverviewScope("Switzerland")}
-                  >
-                    Switzerland
-                  </Button>
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Button
+                      variant={overviewScope === "Overall" ? "default" : "outline"}
+                      onClick={() => setOverviewScope("Overall")}
+                    >
+                      Overall
+                    </Button>
+                    <Button
+                      variant={overviewScope === "Austria" ? "default" : "outline"}
+                      onClick={() => setOverviewScope("Austria")}
+                    >
+                      Austria
+                    </Button>
+                    <Button
+                      variant={overviewScope === "Switzerland" ? "default" : "outline"}
+                      onClick={() => setOverviewScope("Switzerland")}
+                    >
+                      Switzerland
+                    </Button>
+                  </div>
+                  <Dialog>
+                    <DialogTrigger asChild>
+                      <Button variant="outline" size="sm" className="h-9 w-9 p-0" aria-label="Bar chart settings">
+                        <Settings className="h-4 w-4" />
+                      </Button>
+                    </DialogTrigger>
+                    <DialogContent className="ml-auto mr-0 h-full max-h-none w-full max-w-xs rounded-none border-l">
+                      <DialogHeader>
+                        <DialogTitle>Bar chart settings</DialogTitle>
+                      </DialogHeader>
+                      <div className="text-sm text-muted-foreground">
+                        Adjust fill styles and palettes for countries, categories, funnel stages, risk levels, and contract statuses.
+                      </div>
+                      <div className="mt-4 space-y-4">
+                        <div className="rounded-2xl border p-3">
+                          <div className="text-xs text-muted-foreground">Bar fill style</div>
+                          <div className="mt-2 flex items-center gap-2">
+                            {[
+                              {
+                                value: "solid" as BarFillStyle,
+                                label: "Solid",
+                                style: { backgroundColor: "#93c5fd" },
+                              },
+                              {
+                                value: "diagonal" as BarFillStyle,
+                                label: "Diagonal",
+                                style: {
+                                  backgroundImage:
+                                    "repeating-linear-gradient(45deg, #93c5fd 0, #93c5fd 2px, transparent 2px, transparent 6px)",
+                                },
+                              },
+                              {
+                                value: "dots" as BarFillStyle,
+                                label: "Dots",
+                                style: {
+                                  backgroundImage: "radial-gradient(#93c5fd 1.4px, transparent 1.4px)",
+                                  backgroundSize: "6px 6px",
+                                },
+                              },
+                            ].map((opt) => (
+                              <button
+                                key={opt.value}
+                                type="button"
+                                className={`flex items-center gap-2 rounded-full border px-2 py-1 text-xs ${
+                                  barChartSettings.fillStyle === opt.value ? "border-primary text-primary" : "text-muted-foreground"
+                                }`}
+                                onClick={() => setAppSettings({ barChartSettings: { fillStyle: opt.value } })}
+                              >
+                                <span className="h-4 w-4 rounded-sm border" style={opt.style} />
+                                {opt.label}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+
+                        <div className="rounded-2xl border p-3">
+                          <div className="text-xs text-muted-foreground">Palette rules</div>
+                          <Textarea
+                            value={barChartSettings.rulesNote ?? ""}
+                            onChange={(e) => setAppSettings({ barChartSettings: { rulesNote: e.target.value } })}
+                            placeholder="e.g. Use blue for volume, red for risk, and keep funnel stages consistent across teams."
+                            className="mt-2 min-h-[90px]"
+                          />
+                        </div>
+
+                        <div className="rounded-2xl border p-3">
+                          <div className="text-xs text-muted-foreground">Country palette</div>
+                          <div className="mt-2 space-y-2">
+                            {paletteCountries.map((country) => (
+                              <div key={country} className="flex items-center justify-between gap-2 rounded-xl border p-2">
+                                <div className="text-sm font-medium">{country}</div>
+                                <div className="flex items-center gap-2">
+                                  <input
+                                    type="color"
+                                    value={getBarColor("country", country, "#60a5fa")}
+                                    onChange={(e) => updateBarPalette("country", country, e.target.value)}
+                                  />
+                                  <Input
+                                    value={getBarColor("country", country, "#60a5fa")}
+                                    onChange={(e) => updateBarPalette("country", country, e.target.value)}
+                                    className="h-8 w-[110px]"
+                                  />
+                                  <Button variant="outline" size="sm" onClick={() => clearBarPalette("country", country)}>
+                                    Reset
+                                  </Button>
+                                </div>
+                              </div>
+                            ))}
+                            {paletteCountries.length === 0 ? (
+                              <div className="text-xs text-muted-foreground">No countries available yet. Import data first.</div>
+                            ) : null}
+                          </div>
+                        </div>
+
+                        <div className="rounded-2xl border p-3">
+                          <div className="text-xs text-muted-foreground">Category palette</div>
+                          <div className="mt-2 max-h-[260px] space-y-2 overflow-auto pr-1">
+                            {paletteCategories.map((category) => (
+                              <div key={category} className="flex items-center justify-between gap-2 rounded-xl border p-2">
+                                <div className="text-sm font-medium">{category}</div>
+                                <div className="flex items-center gap-2">
+                                  <input
+                                    type="color"
+                                    value={getBarColor("category", category, "#93c5fd")}
+                                    onChange={(e) => updateBarPalette("category", category, e.target.value)}
+                                  />
+                                  <Input
+                                    value={getBarColor("category", category, "#93c5fd")}
+                                    onChange={(e) => updateBarPalette("category", category, e.target.value)}
+                                    className="h-8 w-[110px]"
+                                  />
+                                  <Button variant="outline" size="sm" onClick={() => clearBarPalette("category", category)}>
+                                    Reset
+                                  </Button>
+                                </div>
+                              </div>
+                            ))}
+                            {paletteCategories.length === 0 ? (
+                              <div className="text-xs text-muted-foreground">No categories available yet. Import data first.</div>
+                            ) : null}
+                          </div>
+                        </div>
+
+                        <div className="rounded-2xl border p-3">
+                          <div className="text-xs text-muted-foreground">Funnel stages</div>
+                          <div className="mt-2 space-y-2">
+                            {funnelStages.map((stage) => (
+                              <div key={stage} className="flex items-center justify-between gap-2 rounded-xl border p-2">
+                                <div className="text-sm font-medium">{stage}</div>
+                                <div className="flex items-center gap-2">
+                                  <input
+                                    type="color"
+                                    value={getBarColor("funnelStage", stage, "#93c5fd")}
+                                    onChange={(e) => updateBarPalette("funnelStage", stage, e.target.value)}
+                                  />
+                                  <Input
+                                    value={getBarColor("funnelStage", stage, "#93c5fd")}
+                                    onChange={(e) => updateBarPalette("funnelStage", stage, e.target.value)}
+                                    className="h-8 w-[110px]"
+                                  />
+                                  <Button variant="outline" size="sm" onClick={() => clearBarPalette("funnelStage", stage)}>
+                                    Reset
+                                  </Button>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+
+                        <div className="rounded-2xl border p-3">
+                          <div className="text-xs text-muted-foreground">Risk level palette</div>
+                          <div className="mt-2 space-y-2">
+                            {RISK_LEVEL_OPTIONS.map((risk) => (
+                              <div key={risk} className="flex items-center justify-between gap-2 rounded-xl border p-2">
+                                <div className="text-sm font-medium">{risk}</div>
+                                <div className="flex items-center gap-2">
+                                  <input
+                                    type="color"
+                                    value={getBarColor("riskLevel", risk, DEFAULT_RISK_PALETTE[risk])}
+                                    onChange={(e) => updateBarPalette("riskLevel", risk, e.target.value)}
+                                  />
+                                  <Input
+                                    value={getBarColor("riskLevel", risk, DEFAULT_RISK_PALETTE[risk])}
+                                    onChange={(e) => updateBarPalette("riskLevel", risk, e.target.value)}
+                                    className="h-8 w-[110px]"
+                                  />
+                                  <Button variant="outline" size="sm" onClick={() => clearBarPalette("riskLevel", risk)}>
+                                    Reset
+                                  </Button>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+
+                        <div className="rounded-2xl border p-3">
+                          <div className="text-xs text-muted-foreground">Contract status palette</div>
+                          <div className="mt-2 space-y-2">
+                            {CONTRACT_STATUS_OPTIONS.map((status) => (
+                              <div key={status} className="flex items-center justify-between gap-2 rounded-xl border p-2">
+                                <div className="text-sm font-medium">{status}</div>
+                                <div className="flex items-center gap-2">
+                                  <input
+                                    type="color"
+                                    value={getBarColor("contractStatus", status, DEFAULT_CONTRACT_PALETTE[status])}
+                                    onChange={(e) => updateBarPalette("contractStatus", status, e.target.value)}
+                                  />
+                                  <Input
+                                    value={getBarColor("contractStatus", status, DEFAULT_CONTRACT_PALETTE[status])}
+                                    onChange={(e) => updateBarPalette("contractStatus", status, e.target.value)}
+                                    className="h-8 w-[110px]"
+                                  />
+                                  <Button variant="outline" size="sm" onClick={() => clearBarPalette("contractStatus", status)}>
+                                    Reset
+                                  </Button>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      </div>
+                    </DialogContent>
+                  </Dialog>
                 </div>
 
                 <div className="grid gap-3 md:grid-cols-6">
@@ -2951,6 +3337,10 @@ export default function SupplierRiskOpsDashboard() {
                     <CardContent>
                       <div className="text-3xl font-semibold">{overviewKpis.total}</div>
                       <div className="mt-1 text-sm text-muted-foreground">Unique supplier codes</div>
+                      <div className="mt-2 text-xs text-muted-foreground">
+                        Not evaluated: {overviewKpis.notEvalHighRisk} •{" "}
+                        {overviewKpis.high ? Math.round((overviewKpis.notEvalHighRisk / overviewKpis.high) * 100) : 0}% of High risk
+                      </div>
                     </CardContent>
                   </Card>
 
@@ -2981,18 +3371,6 @@ export default function SupplierRiskOpsDashboard() {
                   <Card>
                     <CardHeader className="pb-2">
                       <CardTitle className="flex items-center gap-2 text-base">
-                        <FileUp className="h-4 w-4" /> Not evaluated
-                      </CardTitle>
-                    </CardHeader>
-                    <CardContent>
-                      <div className="text-3xl font-semibold">{overviewKpis.notEval}</div>
-                      <div className="mt-1 text-sm text-muted-foreground">Needs decision</div>
-                    </CardContent>
-                  </Card>
-
-                  <Card>
-                    <CardHeader className="pb-2">
-                      <CardTitle className="flex items-center gap-2 text-base">
                         <Split className="h-4 w-4" /> Quality alerts
                       </CardTitle>
                     </CardHeader>
@@ -3013,13 +3391,13 @@ export default function SupplierRiskOpsDashboard() {
                     <CardContent className="h-[280px]">
                       <ResponsiveContainer width="100%" height="100%">
                         <BarChart data={funnelData}>
+                          {renderBarDefs("funnelStage", funnelStages, "#93c5fd")}
                           <CartesianGrid strokeDasharray="3 3" />
                           <XAxis dataKey="stage" />
                           <YAxis />
                           <Tooltip />
                           <Bar
                             dataKey="value"
-                            fill="#93c5fd"
                             onClick={(d: any) =>
                               setBarInsight({
                                 title: "Funnel stage",
@@ -3031,7 +3409,14 @@ export default function SupplierRiskOpsDashboard() {
                                 ],
                               })
                             }
-                          />
+                          >
+                            {funnelData.map((entry) => (
+                              <Cell
+                                key={`funnel-${entry.stage}`}
+                                fill={getBarFill("funnelStage", entry.stage, "#93c5fd")}
+                              />
+                            ))}
+                          </Bar>
                         </BarChart>
                       </ResponsiveContainer>
                     </CardContent>
@@ -3122,6 +3507,7 @@ export default function SupplierRiskOpsDashboard() {
                           layout="vertical"
                           margin={{ left: 60 }}
                         >
+                          {renderBarDefs("category", topRiskyByCount.map((c) => c.category), "#93c5fd")}
                           <CartesianGrid strokeDasharray="3 3" />
                           <XAxis type="number" />
                           <YAxis dataKey="category" type="category" width={160} interval={0} tickFormatter={(v: any) => shortLabel(String(v))} />
@@ -3130,7 +3516,6 @@ export default function SupplierRiskOpsDashboard() {
                           <Bar
                             dataKey="highRiskSuppliers"
                             name="High risk suppliers"
-                            fill="#fca5a5"
                             onClick={(d: any) => {
                               const category = d?.payload?.category ?? null;
                               setDrillCategory(category);
@@ -3144,11 +3529,17 @@ export default function SupplierRiskOpsDashboard() {
                                 ],
                               });
                             }}
-                          />
+                          >
+                            {topRiskyByCount.map((entry) => (
+                              <Cell
+                                key={`risk-${entry.category}`}
+                                fill={getBarFill("category", entry.category, "#93c5fd")}
+                              />
+                            ))}
+                          </Bar>
                           <Bar
                             dataKey="suppliers"
                             name="Total suppliers"
-                            fill="#e5e7eb"
                             onClick={(d: any) => {
                               const category = d?.payload?.category ?? null;
                               setDrillCategory(category);
@@ -3162,7 +3553,15 @@ export default function SupplierRiskOpsDashboard() {
                                 ],
                               });
                             }}
-                          />
+                          >
+                            {topRiskyByCount.map((entry) => (
+                              <Cell
+                                key={`total-${entry.category}`}
+                                fill={getBarFill("category", entry.category, "#93c5fd")}
+                                fillOpacity={0.35}
+                              />
+                            ))}
+                          </Bar>
                         </BarChart>
                       </ResponsiveContainer>
                     </CardContent>
@@ -3190,6 +3589,7 @@ export default function SupplierRiskOpsDashboard() {
                           layout="vertical"
                           margin={{ left: 60 }}
                         >
+                          {renderBarDefs("category", topRiskyBySpend.map((c) => c.category), "#93c5fd")}
                           <CartesianGrid strokeDasharray="3 3" />
                           <XAxis type="number" tickFormatter={(v: any) => fmtMoney(Number(v))} />
                           <YAxis dataKey="category" type="category" width={160} interval={0} tickFormatter={(v: any) => shortLabel(String(v))} />
@@ -3198,7 +3598,6 @@ export default function SupplierRiskOpsDashboard() {
                           <Bar
                             dataKey="highRiskSpend"
                             name="High risk spend"
-                            fill="#fca5a5"
                             onClick={(d: any) => {
                               const category = d?.payload?.category ?? null;
                               setDrillCategory(category);
@@ -3212,11 +3611,17 @@ export default function SupplierRiskOpsDashboard() {
                                 ],
                               });
                             }}
-                          />
+                          >
+                            {topRiskyBySpend.map((entry) => (
+                              <Cell
+                                key={`risk-${entry.category}`}
+                                fill={getBarFill("category", entry.category, "#93c5fd")}
+                              />
+                            ))}
+                          </Bar>
                           <Bar
                             dataKey="totalSpend"
                             name="Total spend"
-                            fill="#93c5fd"
                             onClick={(d: any) => {
                               const category = d?.payload?.category ?? null;
                               setDrillCategory(category);
@@ -3230,7 +3635,15 @@ export default function SupplierRiskOpsDashboard() {
                                 ],
                               });
                             }}
-                          />
+                          >
+                            {topRiskyBySpend.map((entry) => (
+                              <Cell
+                                key={`total-${entry.category}`}
+                                fill={getBarFill("category", entry.category, "#93c5fd")}
+                                fillOpacity={0.35}
+                              />
+                            ))}
+                          </Bar>
                         </BarChart>
                       </ResponsiveContainer>
                     </CardContent>
@@ -3249,7 +3662,7 @@ export default function SupplierRiskOpsDashboard() {
                           data={topCountriesByCount}
                           margin={{ left: 10, right: 10 }}
                         >
-                          {renderCountryBarDefs(topCountriesByCount.map((c) => c.country), "#93c5fd")}
+                          {renderBarDefs("country", topCountriesByCount.map((c) => c.country), "#93c5fd")}
                           <CartesianGrid strokeDasharray="3 3" />
                           <XAxis dataKey="country" />
                           <YAxis />
@@ -3273,7 +3686,7 @@ export default function SupplierRiskOpsDashboard() {
                             }}
                           >
                             {topCountriesByCount.map((entry) => (
-                              <Cell key={`risk-${entry.country}`} fill={getCountryFill(entry.country, "#fca5a5")} />
+                              <Cell key={`risk-${entry.country}`} fill={getBarFill("country", entry.country, "#fca5a5")} />
                             ))}
                           </Bar>
                           <Bar
@@ -3294,7 +3707,11 @@ export default function SupplierRiskOpsDashboard() {
                             }}
                           >
                             {topCountriesByCount.map((entry) => (
-                              <Cell key={`total-${entry.country}`} fill={getCountryFill(entry.country, "#93c5fd")} fillOpacity={0.4} />
+                              <Cell
+                                key={`total-${entry.country}`}
+                                fill={getBarFill("country", entry.country, "#93c5fd")}
+                                fillOpacity={0.4}
+                              />
                             ))}
                           </Bar>
                         </BarChart>
@@ -3309,6 +3726,7 @@ export default function SupplierRiskOpsDashboard() {
                     <CardContent className="h-[320px]">
                       <ResponsiveContainer width="100%" height="100%">
                         <BarChart data={riskMix}>
+                          {renderBarDefs("riskLevel", riskMix.map((r) => r.risk), "#93c5fd")}
                           <CartesianGrid strokeDasharray="3 3" />
                           <XAxis dataKey="risk" />
                           <YAxis />
@@ -3329,11 +3747,17 @@ export default function SupplierRiskOpsDashboard() {
                                 ],
                               })
                             }
-                          />
+                          >
+                            {riskMix.map((entry) => (
+                              <Cell
+                                key={`risk-suppliers-${entry.risk}`}
+                                fill={getBarFill("riskLevel", entry.risk, DEFAULT_RISK_PALETTE[entry.risk as RiskLevel] ?? "#e5e7eb")}
+                              />
+                            ))}
+                          </Bar>
                           <Bar
                             dataKey="spend"
                             name="Spend"
-                            fill="#93c5fd"
                             onClick={(d: any) =>
                               setBarInsight({
                                 title: "Risk mix (spend)",
@@ -3345,7 +3769,15 @@ export default function SupplierRiskOpsDashboard() {
                                 ],
                               })
                             }
-                          />
+                          >
+                            {riskMix.map((entry) => (
+                              <Cell
+                                key={`risk-spend-${entry.risk}`}
+                                fill={getBarFill("riskLevel", entry.risk, DEFAULT_RISK_PALETTE[entry.risk as RiskLevel] ?? "#93c5fd")}
+                                fillOpacity={0.5}
+                              />
+                            ))}
+                          </Bar>
                         </BarChart>
                       </ResponsiveContainer>
                     </CardContent>
@@ -3364,7 +3796,7 @@ export default function SupplierRiskOpsDashboard() {
                           data={topCountriesBySpend}
                           margin={{ left: 10, right: 10 }}
                         >
-                          {renderCountryBarDefs(topCountriesBySpend.map((c) => c.country), "#93c5fd")}
+                          {renderBarDefs("country", topCountriesBySpend.map((c) => c.country), "#93c5fd")}
                           <CartesianGrid strokeDasharray="3 3" />
                           <XAxis dataKey="country" />
                           <YAxis tickFormatter={(v: any) => fmtMoney(Number(v))} />
@@ -3388,7 +3820,7 @@ export default function SupplierRiskOpsDashboard() {
                             }}
                           >
                             {topCountriesBySpend.map((entry) => (
-                              <Cell key={`risk-${entry.country}`} fill={getCountryFill(entry.country, "#fca5a5")} />
+                              <Cell key={`risk-${entry.country}`} fill={getBarFill("country", entry.country, "#fca5a5")} />
                             ))}
                           </Bar>
                           <Bar
@@ -3409,7 +3841,11 @@ export default function SupplierRiskOpsDashboard() {
                             }}
                           >
                             {topCountriesBySpend.map((entry) => (
-                              <Cell key={`total-${entry.country}`} fill={getCountryFill(entry.country, "#93c5fd")} fillOpacity={0.4} />
+                              <Cell
+                                key={`total-${entry.country}`}
+                                fill={getBarFill("country", entry.country, "#93c5fd")}
+                                fillOpacity={0.4}
+                              />
                             ))}
                           </Bar>
                         </BarChart>
@@ -3427,7 +3863,7 @@ export default function SupplierRiskOpsDashboard() {
                           data={topCountriesByRiskShare}
                           margin={{ left: 10, right: 10 }}
                         >
-                          {renderCountryBarDefs(topCountriesByRiskShare.map((c) => c.country), "#fca5a5")}
+                          {renderBarDefs("country", topCountriesByRiskShare.map((c) => c.country), "#fca5a5")}
                           <CartesianGrid strokeDasharray="3 3" />
                           <XAxis dataKey="country" />
                           <YAxis tickFormatter={(v: any) => `${Math.round(Number(v) * 100)}%`} />
@@ -3450,7 +3886,7 @@ export default function SupplierRiskOpsDashboard() {
                             }}
                           >
                             {topCountriesByRiskShare.map((entry) => (
-                              <Cell key={`share-${entry.country}`} fill={getCountryFill(entry.country, "#fca5a5")} />
+                              <Cell key={`share-${entry.country}`} fill={getBarFill("country", entry.country, "#fca5a5")} />
                             ))}
                           </Bar>
                         </BarChart>
@@ -3624,7 +4060,7 @@ export default function SupplierRiskOpsDashboard() {
                                     <Badge variant="outline">{drillCategory}</Badge>
                                   ) : (
                                     <div className="flex flex-wrap gap-1">
-                                      {s.categories.slice(0, 2).map((c) => (
+                                      {s.categories.slice(0, 2).map((c: string) => (
                                         <Badge key={c} variant="outline">{c}</Badge>
                                       ))}
                                       {s.categories.length > 2 ? <Badge variant="outline">+{s.categories.length - 2}</Badge> : null}
@@ -4080,19 +4516,59 @@ export default function SupplierRiskOpsDashboard() {
                                                 <Input value={taskOwner} onChange={(e) => setTaskOwner(e.target.value)} />
                                               </div>
                                             </div>
+                                            <div className="mt-2 grid gap-2 md:grid-cols-2">
+                                              <div>
+                                                <div className="text-xs text-muted-foreground">Contact name</div>
+                                                <Input
+                                                  value={taskContactName}
+                                                  onChange={(e) => setTaskContactName(e.target.value)}
+                                                  placeholder={bulkContactName || "Procurement contact"}
+                                                />
+                                              </div>
+                                              <div>
+                                                <div className="text-xs text-muted-foreground">Contact email</div>
+                                                <Input
+                                                  value={taskContactEmail}
+                                                  onChange={(e) => setTaskContactEmail(e.target.value)}
+                                                  placeholder={bulkContactEmail || "name@company.com"}
+                                                />
+                                              </div>
+                                            </div>
                                             <div className="mt-2">
                                               <div className="text-xs text-muted-foreground">Title</div>
                                               <Input value={taskTitle} onChange={(e) => setTaskTitle(e.target.value)} placeholder="Chase signature / send reminder / review docs…" />
                                             </div>
                                             <div className="mt-2">
+                                              <div className="text-xs text-muted-foreground">Resolve by</div>
+                                              <Input value={taskDueDate} onChange={(e) => setTaskDueDate(e.target.value)} type="date" />
+                                            </div>
+                                            <div className="mt-2">
                                               <div className="text-xs text-muted-foreground">Note</div>
                                               <Textarea value={taskNote} onChange={(e) => setTaskNote(e.target.value)} />
                                             </div>
-                                            <div className="mt-2 flex justify-end">
+                                            <div className="mt-2 flex flex-wrap justify-end gap-2">
+                                              <Button
+                                                variant="outline"
+                                                className="gap-2"
+                                                onClick={() => {
+                                                  setTaskSupplierCode(s.code);
+                                                  setTaskSupplierName(s.canonicalName);
+                                                  scheduleEmailFollowUp({
+                                                    supplierCode: s.code,
+                                                    supplierName: s.canonicalName,
+                                                    contactName: taskContactName || bulkContactName,
+                                                    contactEmail: taskContactEmail || bulkContactEmail,
+                                                    stage: "initial",
+                                                  });
+                                                }}
+                                              >
+                                                <Upload className="h-4 w-4" /> Email sent (14d)
+                                              </Button>
                                               <Button
                                                 className="gap-2"
                                                 onClick={() => {
                                                   setTaskSupplierCode(s.code);
+                                                  setTaskSupplierName(s.canonicalName);
                                                   addTask();
                                                 }}
                                               >
@@ -4193,18 +4669,23 @@ export default function SupplierRiskOpsDashboard() {
                     <CardContent className="h-[360px]">
                       <ResponsiveContainer width="100%" height="100%">
                         <BarChart
-                          data={[...categoryMetrics]
-                            .filter((c) => c.suppliers >= 15)
-                            .sort((a, b) => b.riskShare - a.riskShare)
-                            .slice(0, 12)}
+                          data={riskyCategoryChart}
                           layout="vertical"
                           margin={{ left: 60 }}
                         >
+                          {renderBarDefs("category", riskyCategoryChart.map((c) => c.category), "#93c5fd")}
                           <CartesianGrid strokeDasharray="3 3" />
                           <XAxis type="number" tickFormatter={(v: any) => `${Math.round(Number(v) * 100)}%`} />
                           <YAxis type="category" dataKey="category" width={180} />
                           <Tooltip formatter={(v: any) => `${Math.round(Number(v) * 100)}%`} />
-                          <Bar dataKey="riskShare" name="Risk share" />
+                          <Bar dataKey="riskShare" name="Risk share">
+                            {riskyCategoryChart.map((entry) => (
+                              <Cell
+                                key={`category-risk-${entry.category}`}
+                                fill={getBarFill("category", entry.category, "#93c5fd")}
+                              />
+                            ))}
+                          </Bar>
                         </BarChart>
                       </ResponsiveContainer>
                     </CardContent>
@@ -4631,9 +5112,61 @@ export default function SupplierRiskOpsDashboard() {
                                         <div className="font-medium">{c.name}</div>
                                         <div className="text-xs text-muted-foreground">Seen {c.count}×</div>
                                       </div>
-                                      <Button variant="outline" size="sm" onClick={() => setCanonical(d.code, c.name)}>
-                                        Select
-                                      </Button>
+                                      <div className="flex items-center gap-2">
+                                        <Dialog>
+                                          <DialogTrigger asChild>
+                                            <Button variant="outline" size="sm">
+                                              Details
+                                            </Button>
+                                          </DialogTrigger>
+                                          <DialogContent className="max-w-md">
+                                            <DialogHeader>
+                                              <DialogTitle>Supplier name details</DialogTitle>
+                                            </DialogHeader>
+                                            {(() => {
+                                              const stats = candidateStats.get(`${d.code}||${c.name}`);
+                                              const yearLabel = stats?.minYear
+                                                ? stats?.minYear === stats?.maxYear
+                                                  ? `${stats?.minYear}`
+                                                  : `${stats?.minYear}–${stats?.maxYear}`
+                                                : "No year data";
+                                              return (
+                                                <div className="space-y-3 text-sm">
+                                                  <div>
+                                                    <div className="text-xs text-muted-foreground">Supplier code</div>
+                                                    <div className="font-medium">{d.code}</div>
+                                                  </div>
+                                                  <div>
+                                                    <div className="text-xs text-muted-foreground">Candidate name</div>
+                                                    <div className="font-medium">{c.name}</div>
+                                                  </div>
+                                                  <div className="grid gap-2 md:grid-cols-2">
+                                                    <div className="rounded-2xl border p-3">
+                                                      <div className="text-xs text-muted-foreground">Total spend</div>
+                                                      <div className="text-sm font-semibold">{fmtMoney(stats?.totalSpend ?? 0)}</div>
+                                                    </div>
+                                                    <div className="rounded-2xl border p-3">
+                                                      <div className="text-xs text-muted-foreground">Total POs</div>
+                                                      <div className="text-sm font-semibold">{Math.round(stats?.totalPO ?? 0)}</div>
+                                                    </div>
+                                                    <div className="rounded-2xl border p-3">
+                                                      <div className="text-xs text-muted-foreground">Rows</div>
+                                                      <div className="text-sm font-semibold">{stats?.rows ?? 0}</div>
+                                                    </div>
+                                                    <div className="rounded-2xl border p-3">
+                                                      <div className="text-xs text-muted-foreground">Year range</div>
+                                                      <div className="text-sm font-semibold">{yearLabel}</div>
+                                                    </div>
+                                                  </div>
+                                                </div>
+                                              );
+                                            })()}
+                                          </DialogContent>
+                                        </Dialog>
+                                        <Button variant="outline" size="sm" onClick={() => setCanonical(d.code, c.name)}>
+                                          Select
+                                        </Button>
+                                      </div>
                                     </div>
                                   ))}
                                 </div>
@@ -4668,6 +5201,32 @@ export default function SupplierRiskOpsDashboard() {
                     <Textarea value={bulkCodes} onChange={(e) => setBulkCodes(e.target.value)} placeholder="3302858\n3303076\nA324100_00" className="mt-2 min-h-[160px]" />
                   </div>
                   <div className="space-y-3">
+                    <Card>
+                      <CardContent className="p-4">
+                        <div className="text-sm font-medium">Supplier code contact</div>
+                        <div className="text-xs text-muted-foreground">
+                          Default contact for bulk email outreach. Used when creating tasks from suppliers.
+                        </div>
+                        <div className="mt-3 grid gap-2 md:grid-cols-2">
+                          <div>
+                            <div className="text-xs text-muted-foreground">Contact name</div>
+                            <Input
+                              value={db.settings.bulkContactName}
+                              onChange={(e) => setAppSettings({ bulkContactName: e.target.value })}
+                              placeholder="Procurement contact"
+                            />
+                          </div>
+                          <div>
+                            <div className="text-xs text-muted-foreground">Contact email</div>
+                            <Input
+                              value={db.settings.bulkContactEmail}
+                              onChange={(e) => setAppSettings({ bulkContactEmail: e.target.value })}
+                              placeholder="name@company.com"
+                            />
+                          </div>
+                        </div>
+                      </CardContent>
+                    </Card>
                     {db.lastUndo ? (
                       <Card>
                         <CardContent className="p-4">
@@ -5116,8 +5675,34 @@ export default function SupplierRiskOpsDashboard() {
                     <Input value={taskSupplierCode} onChange={(e) => setTaskSupplierCode(e.target.value)} placeholder="3302858" />
                   </div>
                   <div>
+                    <div className="text-xs text-muted-foreground">Supplier name (optional)</div>
+                    <Input value={taskSupplierName} onChange={(e) => setTaskSupplierName(e.target.value)} placeholder="Alpine Logistics GmbH" />
+                  </div>
+                  <div className="grid gap-2 md:grid-cols-2">
+                    <div>
+                      <div className="text-xs text-muted-foreground">Contact name</div>
+                      <Input
+                        value={taskContactName}
+                        onChange={(e) => setTaskContactName(e.target.value)}
+                        placeholder={bulkContactName || "Procurement contact"}
+                      />
+                    </div>
+                    <div>
+                      <div className="text-xs text-muted-foreground">Contact email</div>
+                      <Input
+                        value={taskContactEmail}
+                        onChange={(e) => setTaskContactEmail(e.target.value)}
+                        placeholder={bulkContactEmail || "name@company.com"}
+                      />
+                    </div>
+                  </div>
+                  <div>
                     <div className="text-xs text-muted-foreground">Title</div>
                     <Input value={taskTitle} onChange={(e) => setTaskTitle(e.target.value)} placeholder="Send contract / chase signature / review docs…" />
+                  </div>
+                  <div>
+                    <div className="text-xs text-muted-foreground">Resolve by</div>
+                    <Input value={taskDueDate} onChange={(e) => setTaskDueDate(e.target.value)} type="date" />
                   </div>
                   <div>
                     <div className="text-xs text-muted-foreground">Note</div>
@@ -5136,17 +5721,78 @@ export default function SupplierRiskOpsDashboard() {
                     {(tasksByDate[taskDate] ?? []).length === 0 ? (
                       <div className="text-sm text-muted-foreground">No tasks for {taskDate}</div>
                     ) : (
-                      (tasksByDate[taskDate] ?? []).map((t) => (
-                        <div key={t.id} className="flex items-start justify-between gap-2 rounded-2xl border p-3">
+                      (tasksByDate[taskDate] ?? []).map((t) => {
+                        const today = new Date().toISOString().slice(0, 10);
+                        const due = t.dueDate ?? t.date;
+                        const overdue = due ? due < today : false;
+                        const overdueClass =
+                          overdue && t.kind === "email"
+                            ? t.followUpStage === "followup"
+                              ? "border-red-200 bg-red-50"
+                              : "border-yellow-200 bg-yellow-50"
+                            : "";
+                        return (
+                          <div key={t.id} className={`flex items-start justify-between gap-2 rounded-2xl border p-3 ${overdueClass}`}>
                           <div>
                             <div className="flex items-center gap-2">
                               {t.status === "done" ? <CheckCircle2 className="h-4 w-4" /> : <AlertCircle className="h-4 w-4" />}
                               <div className="font-medium">{t.title}</div>
+                              {t.kind === "email" ? (
+                                <Badge variant={t.followUpStage === "urgent" ? "destructive" : "outline"} className="text-[10px]">
+                                  {t.followUpStage === "urgent"
+                                    ? "Urgent call"
+                                    : t.followUpStage === "followup"
+                                      ? "Follow-up"
+                                      : "Initial email"}
+                                </Badge>
+                              ) : null}
                             </div>
-                            <div className="mt-1 text-xs text-muted-foreground">Owner: {t.owner}{t.supplierCode ? ` • Supplier: ${t.supplierCode}` : ""}</div>
+                            <div className="mt-1 text-xs text-muted-foreground">
+                              Owner: {t.owner}
+                              {t.supplierCode ? ` • Supplier: ${t.supplierCode}` : ""}
+                              {t.supplierName ? ` • ${t.supplierName}` : ""}
+                            </div>
+                            <div className="mt-1 text-xs text-muted-foreground">
+                              Created: {t.createdAt ? fmtDate(t.createdAt) : "N/A"}
+                              {t.dueDate ? ` • Due: ${t.dueDate}` : ""}
+                              {t.contactName || t.contactEmail
+                                ? ` • Contact: ${t.contactName || ""}${t.contactEmail ? ` (${t.contactEmail})` : ""}`
+                                : ""}
+                            </div>
                             {t.note ? <div className="mt-2 text-sm">{t.note}</div> : null}
                           </div>
                           <div className="flex gap-2">
+                            {t.kind === "email" && t.followUpStage === "initial" && t.status !== "done" ? (
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                onClick={() => {
+                                  const baseDate = new Date().toISOString().slice(0, 10);
+                                  updateTask(t.id, {
+                                    followUpStage: "followup",
+                                    dueDate: addDays(baseDate, 7),
+                                    date: addDays(baseDate, 7),
+                                    note: `${t.note ?? ""}\nFollow-up email sent.`,
+                                  });
+                                }}
+                              >
+                                Send follow-up
+                              </Button>
+                            ) : null}
+                            {t.kind === "email" && t.followUpStage === "followup" && t.status !== "done" ? (
+                              <Button
+                                variant="destructive"
+                                size="sm"
+                                onClick={() =>
+                                  updateTask(t.id, {
+                                    followUpStage: "urgent",
+                                    note: `${t.note ?? ""}\nEscalated: urgent call required.`,
+                                  })
+                                }
+                              >
+                                Escalate call
+                              </Button>
+                            ) : null}
                             <Button variant="outline" size="sm" onClick={() => toggleTask(t.id)}>
                               {t.status === "done" ? "Undo" : "Done"}
                             </Button>
@@ -5155,7 +5801,8 @@ export default function SupplierRiskOpsDashboard() {
                             </Button>
                           </div>
                         </div>
-                      ))
+                        );
+                      })
                     )}
                   </div>
                 </CardContent>
@@ -5190,6 +5837,38 @@ export default function SupplierRiskOpsDashboard() {
                 </CardContent>
               </Card>
             </div>
+
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base text-red-600">Red Ignorance Alert</CardTitle>
+              </CardHeader>
+              <CardContent>
+                {redIgnoranceAlerts.length === 0 ? (
+                  <div className="text-sm text-muted-foreground">No escalations pending.</div>
+                ) : (
+                  <div className="space-y-2">
+                    {redIgnoranceAlerts.map((t) => (
+                      <div key={t.id} className="rounded-2xl border border-red-200 bg-red-50 p-3">
+                        <div className="flex items-center justify-between gap-2">
+                          <div>
+                            <div className="font-medium">{t.supplierName ?? t.supplierCode ?? "Unknown supplier"}</div>
+                            <div className="text-xs text-muted-foreground">
+                              {t.contactName || t.contactEmail
+                                ? `Contact: ${t.contactName || ""}${t.contactEmail ? ` (${t.contactEmail})` : ""}`
+                                : "No contact provided"}
+                            </div>
+                          </div>
+                          <Badge variant="destructive">Urgent call</Badge>
+                        </div>
+                      <div className="mt-1 text-xs text-muted-foreground">
+                        Due: {t.dueDate ?? t.date} • Status: Ignore Risk
+                      </div>
+                    </div>
+                  ))}
+                  </div>
+                )}
+              </CardContent>
+            </Card>
           </TabsContent>
         </Tabs>
 
