@@ -126,7 +126,13 @@ type AppSettings = {
   /** Bulk contact defaults for outreach */
   bulkContactName: string;
   bulkContactEmail: string;
+  statusPalette: {
+    risk: Record<RiskLevel, string>;
+    contract: Record<ContractStatus, string>;
+  };
+  supplierContacts?: Record<string, string>;
 };
+
 
 type UndoBatch = {
   id: string;
@@ -273,6 +279,12 @@ const DEFAULT_SETTINGS: AppSettings = {
   },
   bulkContactName: "",
   bulkContactEmail: "",
+  // ДОБАВИТЬ:
+  statusPalette: {
+    risk: DEFAULT_RISK_PALETTE,
+    contract: DEFAULT_CONTRACT_PALETTE,
+  },
+  supplierContacts: {}, // ДОБАВИТЬ
 };
 
 const RISK_LEVELS: RiskLevel[] = ["High", "Non-risk", "Unknown"];
@@ -1438,6 +1450,14 @@ function EmptyState({ title, subtitle }: { title: string; subtitle?: string }) {
 // -----------------------------
 // Main App
 // -----------------------------
+// ✅ ВНЕ компонента (не используют state)
+function getRiskColor(risk: RiskLevel, fallback: string): string {
+  return fallback;
+}
+
+function getContractColor(status: ContractStatus, fallback: string): string {
+  return fallback;
+}
 
 export default function SupplierRiskOpsDashboard() {
   const [db, setDB] = useState<PersistedDB>(() => loadDB());
@@ -1516,11 +1536,35 @@ export default function SupplierRiskOpsDashboard() {
   const [bulkContactCode, setBulkContactCode] = useState("");
   const [bulkContactEmail, setBulkContactEmail] = useState("");
 
-  const fileInputRef = useRef<HTMLInputElement | null>(null);
+ const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     saveDB(db);
   }, [db]);
+
+  // ✅ ВНУТРИ компонента (после всех useState/useEffect, перед useMemo)
+  function upsertSupplierContact(code: string, email: string) {
+    const trimmedCode = normCode(code);
+    const trimmedEmail = safeStr(email);
+    if (!trimmedCode || !trimmedEmail) return;
+    
+    setDB((prev) => ({
+      ...prev,
+      settings: {
+        ...prev.settings,
+        supplierContacts: {
+          ...(prev.settings.supplierContacts ?? {}),
+          [trimmedCode]: trimmedEmail,
+        },
+      },
+    }));
+    
+    pushLog({
+      type: "SETTINGS",
+      summary: `Saved contact for ${trimmedCode}: ${trimmedEmail}`,
+      details: { code: trimmedCode, email: trimmedEmail },
+    });
+  }
 
   const availableCountries = useMemo(() => {
     const list = uniq(db.factRows.map((r) => safeStr(r.country)).filter(Boolean)).sort();
@@ -5624,91 +5668,9 @@ export default function SupplierRiskOpsDashboard() {
                           </Card>
                         ) : (
                           <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-muted-foreground">
-                            Select a “Code → many names” issue to resolve it here.
+                            Select a "Code → many names" issue to resolve it here.
                           </div>
                         )}
-
-                                <div className="mt-3 grid gap-2 md:grid-cols-2">
-                                  {d.candidates.map((c) => (
-                                    <div
-                                      key={c.name}
-                                      className={`flex items-center justify-between gap-2 rounded-2xl border p-3 ${
-                                        c.name === d.recommended
-                                          ? "border-green-200 bg-green-50"
-                                          : "border-slate-200 bg-slate-100"
-                                      }`}
-                                    >
-                                      <div>
-                                        <div className="font-medium">{c.name}</div>
-                                        <div className="text-xs text-muted-foreground">Seen {c.count}×</div>
-                                      </div>
-                                      <div className="flex items-center gap-2">
-                                        <Dialog>
-                                          <DialogTrigger asChild>
-                                            <Button variant="outline" size="sm">
-                                              Details
-                                            </Button>
-                                          </DialogTrigger>
-                                          <DialogContent className="max-w-md">
-                                            <DialogHeader>
-                                              <DialogTitle>Supplier name details</DialogTitle>
-                                            </DialogHeader>
-                                            {(() => {
-                                              const stats = candidateStats.get(`${d.code}||${c.name}`);
-                                              const yearLabel = stats?.minYear
-                                                ? stats?.minYear === stats?.maxYear
-                                                  ? `${stats?.minYear}`
-                                                  : `${stats?.minYear}–${stats?.maxYear}`
-                                                : "No year data";
-                                              return (
-                                                <div className="space-y-3 text-sm">
-                                                  <div>
-                                                    <div className="text-xs text-muted-foreground">Supplier code</div>
-                                                    <div className="font-medium">{d.code}</div>
-                                                  </div>
-                                                  <div>
-                                                    <div className="text-xs text-muted-foreground">Candidate name</div>
-                                                    <div className="font-medium">{c.name}</div>
-                                                  </div>
-                                                  <div className="grid gap-2 md:grid-cols-2">
-                                                    <div className="rounded-2xl border p-3">
-                                                      <div className="text-xs text-muted-foreground">Total spend</div>
-                                                      <div className="text-sm font-semibold">{fmtMoney(stats?.totalSpend ?? 0)}</div>
-                                                    </div>
-                                                    <div className="rounded-2xl border p-3">
-                                                      <div className="text-xs text-muted-foreground">Total POs</div>
-                                                      <div className="text-sm font-semibold">{Math.round(stats?.totalPO ?? 0)}</div>
-                                                    </div>
-                                                    <div className="rounded-2xl border p-3">
-                                                      <div className="text-xs text-muted-foreground">Rows</div>
-                                                      <div className="text-sm font-semibold">{stats?.rows ?? 0}</div>
-                                                    </div>
-                                                    <div className="rounded-2xl border p-3">
-                                                      <div className="text-xs text-muted-foreground">Year range</div>
-                                                      <div className="text-sm font-semibold">{yearLabel}</div>
-                                                    </div>
-                                                  </div>
-                                                </div>
-                                              );
-                                            })()}
-                                          </DialogContent>
-                                        </Dialog>
-                                        <Button variant="outline" size="sm" onClick={() => setCanonical(d.code, c.name)}>
-                                          Select
-                                        </Button>
-                                      </div>
-                                    </div>
-                                  </div>
-
-                                  <div className="mt-3 text-xs text-muted-foreground">
-                                    Current canonical: <span className="font-medium">{d.current}</span> • Recommended:{" "}
-                                    <span className="font-medium">{d.recommended}</span>
-                                  </div>
-                                </CardContent>
-                              </Card>
-                            </motion.div>
-                          ))}
-                        </div>
                       </div>
                     )}
                   </CardContent>
@@ -5727,32 +5689,6 @@ export default function SupplierRiskOpsDashboard() {
               <CardContent className="space-y-4">
                 <div className="grid gap-3 md:grid-cols-2">
                   <div className="space-y-3">
-                    <Card>
-                      <CardContent className="p-4">
-                        <div className="text-sm font-medium">Supplier code contact</div>
-                        <div className="text-xs text-muted-foreground">
-                          Default contact for bulk email outreach. Used when creating tasks from suppliers.
-                        </div>
-                        <div className="mt-3 grid gap-2 md:grid-cols-2">
-                          <div>
-                            <div className="text-xs text-muted-foreground">Contact name</div>
-                            <Input
-                              value={db.settings.bulkContactName}
-                              onChange={(e) => setAppSettings({ bulkContactName: e.target.value })}
-                              placeholder="Procurement contact"
-                            />
-                          </div>
-                          <div>
-                            <div className="text-xs text-muted-foreground">Contact email</div>
-                            <Input
-                              value={db.settings.bulkContactEmail}
-                              onChange={(e) => setAppSettings({ bulkContactEmail: e.target.value })}
-                              placeholder="name@company.com"
-                            />
-                          </div>
-                        </div>
-                      </CardContent>
-                    </Card>
                     {db.lastUndo ? (
                       <Card>
                         <CardContent className="p-4">
