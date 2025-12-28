@@ -1286,6 +1286,7 @@ export default function SupplierRiskOpsDashboard() {
   const [actor, setActor] = useState("Hero");
   const [activeTab, setActiveTab] = useState("overview");
   const [globalCountry, setGlobalCountry] = useState("Overall");
+  const [overviewScope, setOverviewScope] = useState("Overall");
 
   // filters
   const [q, setQ] = useState("");
@@ -1297,10 +1298,6 @@ export default function SupplierRiskOpsDashboard() {
   const [categoryFilter, setCategoryFilter] = useState<string | "All">("All");
   const [fastActionSort, setFastActionSort] = useState<{ key: "spend" | "name" | "contract"; dir: "asc" | "desc" }>({
     key: "spend",
-    dir: "desc",
-  });
-  const [drillSort, setDrillSort] = useState<{ key: "supplier" | "risk" | "contract" | "poSlice" | "spendSlice" | "totalSpend"; dir: "asc" | "desc" }>({
-    key: "spendSlice",
     dir: "desc",
   });
   const [categoryTableSort, setCategoryTableSort] = useState<{ key: "category" | "suppliers" | "highRisk" | "riskShare" | "spend"; dir: "asc" | "desc" }>({
@@ -1341,6 +1338,7 @@ export default function SupplierRiskOpsDashboard() {
   const [taskNote, setTaskNote] = useState("");
   const [taskSupplierCode, setTaskSupplierCode] = useState("");
 
+  const [selectedSupplierCodes, setSelectedSupplierCodes] = useState<Set<string>>(new Set());
   const [selectedSuppliers, setSelectedSuppliers] = useState<Set<string>>(new Set());
   const [bulkMarkRisk, setBulkMarkRisk] = useState<BulkRiskChoice>("No change");
   const [bulkMarkEvaluated, setBulkMarkEvaluated] = useState<BulkEvalChoice>("No change");
@@ -1350,6 +1348,7 @@ export default function SupplierRiskOpsDashboard() {
   const [drillSortState, setDrillSortState] = useState<{ key: string; dir: "asc" | "desc" }>({ key: "spendInSlice", dir: "desc" });
   const [categoryTableSortState, setCategoryTableSortState] = useState<{ key: string; dir: "asc" | "desc" }>({ key: "highRiskSuppliers", dir: "desc" });
   const [barInsight, setBarInsight] = useState<{ title: string; label: string; details: string[] } | null>(null);
+  const [barAnalysis, setBarAnalysis] = useState<{ title: string; details: Record<string, any> } | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -1861,13 +1860,6 @@ export default function SupplierRiskOpsDashboard() {
     setBarAnalysis({ title, details });
   };
 
-  const setDrillSortKey = (key: typeof drillSort.key) => {
-    setDrillSort((prev) => ({
-      key,
-      dir: prev.key === key ? (prev.dir === "asc" ? "desc" : "asc") : "desc",
-    }));
-  };
-
   const setCategorySortKey = (key: typeof categoryTableSort.key) => {
     setCategoryTableSort((prev) => ({
       key,
@@ -1887,134 +1879,6 @@ export default function SupplierRiskOpsDashboard() {
   }, [worklist, fastQueueSort]);
 
   const drillRows = useMemo(() => {
-    const rows = (drillCategory ? drillSuppliers : drillSuppliersByCountry) as any[];
-    const sorted = [...rows];
-    const dir = drillSort.dir === "asc" ? 1 : -1;
-    const orderRisk: Record<RiskLevel, number> = { High: 3, "Non-risk": 2, Unknown: 1 };
-    sorted.sort((a, b) => {
-      const key = drillSort.key;
-      if (key === "risk") return (orderRisk[a.risk] - orderRisk[b.risk]) * dir;
-      if (key === "contractStatus") return String(a.contractStatus).localeCompare(String(b.contractStatus)) * dir;
-      if (key === "canonicalName") return String(a.canonicalName).localeCompare(String(b.canonicalName)) * dir;
-      if (key === "categories") return String(a.categories?.[0] ?? "").localeCompare(String(b.categories?.[0] ?? "")) * dir;
-      return (Number(a[key] ?? 0) - Number(b[key] ?? 0)) * dir;
-    });
-    return sorted;
-  }, [drillCategory, drillSuppliers, drillSuppliersByCountry, drillSort]);
-
-  function jumpToSupplier(code: string) {
-    setQ(code);
-    setActiveTab("suppliers");
-  }
-
-  const worklistSorted = useMemo(() => {
-    const sorted = [...worklist];
-    const dir = fastQueueSort.includes("Asc") ? 1 : -1;
-    if (fastQueueSort.startsWith("Spend")) {
-      sorted.sort((a, b) => (a.totalSpend - b.totalSpend) * dir);
-    } else {
-      sorted.sort((a, b) => a.canonicalName.localeCompare(b.canonicalName) * dir);
-    }
-    return sorted;
-  }, [worklist, fastQueueSort]);
-
-  const drillRows = useMemo(() => {
-    const rows = (drillCategory ? drillSuppliers : drillSuppliersByCountry) as any[];
-    const sorted = [...rows];
-    const dir = drillSortState.dir === "asc" ? 1 : -1;
-    const orderRisk: Record<RiskLevel, number> = { High: 3, "Non-risk": 2, Unknown: 1 };
-    sorted.sort((a, b) => {
-      const key = drillSortState.key;
-      if (key === "risk") return (orderRisk[a.risk] - orderRisk[b.risk]) * dir;
-      if (key === "contractStatus") return String(a.contractStatus).localeCompare(String(b.contractStatus)) * dir;
-      if (key === "canonicalName") return String(a.canonicalName).localeCompare(String(b.canonicalName)) * dir;
-      if (key === "categories") return String(a.categories?.[0] ?? "").localeCompare(String(b.categories?.[0] ?? "")) * dir;
-      return (Number(a[key] ?? 0) - Number(b[key] ?? 0)) * dir;
-    });
-    return sorted;
-  }, [drillCategory, drillSuppliers, drillSuppliersByCountry, drillSortState]);
-
-  function jumpToSupplier(code: string) {
-    setQ(code);
-    setActiveTab("suppliers");
-  }
-
-  const worklistSorted = useMemo(() => {
-    const sorted = [...worklist];
-    const dir = fastQueueSort.includes("Asc") ? 1 : -1;
-    if (fastQueueSort.startsWith("Spend")) {
-      sorted.sort((a, b) => (a.totalSpend - b.totalSpend) * dir);
-    } else {
-      sorted.sort((a, b) => a.canonicalName.localeCompare(b.canonicalName) * dir);
-    }
-    return sorted;
-  }, [worklist, fastQueueSort]);
-
-  const drillRows = useMemo(() => {
-    const rows = (drillCategory ? drillSuppliers : drillSuppliersByCountry) as any[];
-    const sorted = [...rows];
-    const dir = drillSortState.dir === "asc" ? 1 : -1;
-    const orderRisk: Record<RiskLevel, number> = { High: 3, "Non-risk": 2, Unknown: 1 };
-    sorted.sort((a, b) => {
-      const key = drillSortState.key;
-      if (key === "risk") return (orderRisk[a.risk] - orderRisk[b.risk]) * dir;
-      if (key === "contractStatus") return String(a.contractStatus).localeCompare(String(b.contractStatus)) * dir;
-      if (key === "canonicalName") return String(a.canonicalName).localeCompare(String(b.canonicalName)) * dir;
-      if (key === "categories") return String(a.categories?.[0] ?? "").localeCompare(String(b.categories?.[0] ?? "")) * dir;
-      return (Number(a[key] ?? 0) - Number(b[key] ?? 0)) * dir;
-    });
-    return sorted;
-  }, [drillCategory, drillSuppliers, drillSuppliersByCountry, drillSortState]);
-
-  function jumpToSupplier(code: string) {
-    setQ(code);
-    setActiveTab("suppliers");
-  }
-
-  const worklistSorted = useMemo(() => {
-    const sorted = [...worklist];
-    const dir = fastQueueSort.includes("Asc") ? 1 : -1;
-    if (fastQueueSort.startsWith("Spend")) {
-      sorted.sort((a, b) => (a.totalSpend - b.totalSpend) * dir);
-    } else {
-      sorted.sort((a, b) => a.canonicalName.localeCompare(b.canonicalName) * dir);
-    }
-    return sorted;
-  }, [worklist, fastQueueSort]);
-
-  const drillRows = useMemo(() => {
-    const rows = (drillCategory ? drillSuppliers : drillSuppliersByCountry) as any[];
-    const sorted = [...rows];
-    const dir = drillSortState.dir === "asc" ? 1 : -1;
-    const orderRisk: Record<RiskLevel, number> = { High: 3, "Non-risk": 2, Unknown: 1 };
-    sorted.sort((a, b) => {
-      const key = drillSortState.key;
-      if (key === "risk") return (orderRisk[a.risk] - orderRisk[b.risk]) * dir;
-      if (key === "contractStatus") return String(a.contractStatus).localeCompare(String(b.contractStatus)) * dir;
-      if (key === "canonicalName") return String(a.canonicalName).localeCompare(String(b.canonicalName)) * dir;
-      if (key === "categories") return String(a.categories?.[0] ?? "").localeCompare(String(b.categories?.[0] ?? "")) * dir;
-      return (Number(a[key] ?? 0) - Number(b[key] ?? 0)) * dir;
-    });
-    return sorted;
-  }, [drillCategory, drillSuppliers, drillSuppliersByCountry, drillSortState]);
-
-  function jumpToSupplier(code: string) {
-    setQ(code);
-    setActiveTab("suppliers");
-  }
-
-  const worklistSortedList = useMemo(() => {
-    const sorted = [...worklist];
-    const dir = fastQueueSort.includes("Asc") ? 1 : -1;
-    if (fastQueueSort.startsWith("Spend")) {
-      sorted.sort((a, b) => (a.totalSpend - b.totalSpend) * dir);
-    } else {
-      sorted.sort((a, b) => a.canonicalName.localeCompare(b.canonicalName) * dir);
-    }
-    return sorted;
-  }, [worklist, fastQueueSort]);
-
-  const drillRowsSorted = useMemo(() => {
     const rows = (drillCategory ? drillSuppliers : drillSuppliersByCountry) as any[];
     const sorted = [...rows];
     const dir = drillSortState.dir === "asc" ? 1 : -1;
@@ -3203,7 +3067,7 @@ export default function SupplierRiskOpsDashboard() {
                             </TableRow>
                           </TableHeader>
                           <TableBody>
-                            {worklistSortedList.slice(0, 12).map((s) => (
+                            {worklistSorted.slice(0, 12).map((s) => (
                               <TableRow key={s.code}>
                                 <TableCell>
                                   <button
@@ -3740,7 +3604,7 @@ export default function SupplierRiskOpsDashboard() {
                             </TableRow>
                           </TableHeader>
                           <TableBody>
-                            {drillRowsSorted.map((s) => (
+                            {drillRows.map((s) => (
                               <TableRow key={s.code}>
                                 <TableCell>
                                   <div className="font-medium">{s.canonicalName}</div>
