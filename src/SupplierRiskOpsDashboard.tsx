@@ -129,7 +129,8 @@ type AppSettings = {
   statusPalette: {
     risk: Record<RiskLevel, string>;
     contract: Record<ContractStatus, string>;
-  };
+    supplierContacts?: Record<string, string>;
+};
   supplierContacts?: Record<string, string>;
 };
 
@@ -215,8 +216,8 @@ type LogEntry = {
 
 type Task = {
   id: string;
-  date: string; // YYYY-MM-DD
-  createdAt: string; // ISO
+  date: string;
+  createdAt: string;
   owner: string;
   title: string;
   note?: string;
@@ -224,9 +225,8 @@ type Task = {
   supplierName?: string;
   contactName?: string;
   contactEmail?: string;
-  createdAt: string; // ISO
-  dueDate?: string; // YYYY-MM-DD
-  kind?: "general" | "email";
+  dueDate?: string;
+  kind?: "general" | "email" | "contractFollowup";
   followUpStage?: "initial" | "followup" | "urgent";
   status: "todo" | "done";
 };
@@ -283,7 +283,7 @@ const DEFAULT_SETTINGS: AppSettings = {
     risk: DEFAULT_RISK_PALETTE,
     contract: DEFAULT_CONTRACT_PALETTE,
   },
-  supplierContacts: {}, // ← ДОБАВИТЬ ЭТУ СТРОКУ
+  supplierContacts: {}, // в†ђ Р”РћР‘РђР’РРўР¬ Р­РўРЈ РЎРўР РћРљРЈ
 };
 
 const RISK_LEVELS: RiskLevel[] = ["High", "Non-risk", "Unknown"];
@@ -895,8 +895,8 @@ function normalizeJsonRowsToFactRows(rows: any[]): FactRow[] {
 function pickRowsFromUnknownJson(parsed: any): any[] {
   if (Array.isArray(parsed)) return parsed;
   if (!parsed || typeof parsed !== "object") return [];
-  // common export pattern: { "Лист1": [...], ... }
-  if (Array.isArray((parsed as any)["Лист1"])) return (parsed as any)["Лист1"];
+  // common export pattern: { "Р›РёСЃС‚1": [...], ... }
+  if (Array.isArray((parsed as any)["Р›РёСЃС‚1"])) return (parsed as any)["Р›РёСЃС‚1"];
   // otherwise: pick the first array-of-objects property
   for (const k of Object.keys(parsed)) {
     const v = (parsed as any)[k];
@@ -1367,7 +1367,7 @@ function addDays(dateStr: string, days: number) {
 
 function shortLabel(label: string, max = 22) {
   if (label.length <= max) return label;
-  return `${label.slice(0, max - 1)}…`;
+  return `${label.slice(0, max - 1)}вЂ¦`;
 }
 
 function slugifyKey(value: string) {
@@ -1449,7 +1449,17 @@ function EmptyState({ title, subtitle }: { title: string; subtitle?: string }) {
 // -----------------------------
 // Main App
 // -----------------------------
-// ✅ ВНЕ компонента (не используют state)
+// вњ… Р’РќР• РєРѕРјРїРѕРЅРµРЅС‚Р° (РЅРµ РёСЃРїРѕР»СЊР·СѓСЋС‚ state)
+function getRiskColor(risk: RiskLevel, fallback: string): string {
+  return fallback;
+}
+
+function getContractColor(status: ContractStatus, fallback: string): string {
+  return fallback;
+}
+
+
+// Helper functions
 function getRiskColor(risk: RiskLevel, fallback: string): string {
   return fallback;
 }
@@ -1535,13 +1545,28 @@ export default function SupplierRiskOpsDashboard() {
   const [bulkContactCode, setBulkContactCode] = useState("");
   const [bulkContactEmail, setBulkContactEmail] = useState("");
 
+  // Helper function to update supplier contacts
+  const upsertSupplierContact = (code: string, email: string) => {
+    setDB(prev => ({
+      ...prev,
+      settings: {
+        ...prev.settings,
+        supplierContacts: {
+          ...(prev.settings.supplierContacts || {}),
+          [code]: email
+        }
+      }
+    }));
+    pushLog({ action: "SUPPLIER_CONTACT_UPDATE", summary: `Updated contact for ${code}` });
+  };
+
  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     saveDB(db);
   }, [db]);
 
-  // ✅ ВНУТРИ компонента (после всех useState/useEffect, перед useMemo)
+  // вњ… Р’РќРЈРўР Р РєРѕРјРїРѕРЅРµРЅС‚Р° (РїРѕСЃР»Рµ РІСЃРµС… useState/useEffect, РїРµСЂРµРґ useMemo)
   function upsertSupplierContact(code: string, email: string) {
     const trimmedCode = normCode(code);
     const trimmedEmail = safeStr(email);
@@ -2936,8 +2961,8 @@ export default function SupplierRiskOpsDashboard() {
       contactEmail: options.contactEmail || db.settings.bulkContactEmail,
       note:
         options.stage === "initial"
-          ? `Email sent — reminder scheduled for ${initialDays} days.`
-          : `Follow-up email sent — reminder scheduled for ${followUpDays} days.`,
+          ? `Email sent вЂ” reminder scheduled for ${initialDays} days.`
+          : `Follow-up email sent вЂ” reminder scheduled for ${followUpDays} days.`,
     });
   }
 
@@ -3052,7 +3077,7 @@ export default function SupplierRiskOpsDashboard() {
             dueDate,
             "urgent",
             `Urgent call required: ${supplier.canonicalName}`,
-            "Auto: second reminder overdue. Требуется срочный звонок."
+            "Auto: second reminder overdue. РўСЂРµР±СѓРµС‚СЃСЏ СЃСЂРѕС‡РЅС‹Р№ Р·РІРѕРЅРѕРє."
           )
         );
       }
@@ -3132,7 +3157,7 @@ export default function SupplierRiskOpsDashboard() {
             </div>
             <div>
               <div className="text-lg font-semibold">Supplier Risk Ops Dashboard</div>
-              <div className="text-xs text-muted-foreground">Single source of truth • Bulk actions • Audit log • Calendar</div>
+              <div className="text-xs text-muted-foreground">Single source of truth вЂў Bulk actions вЂў Audit log вЂў Calendar</div>
             </div>
           </div>
 
@@ -3489,7 +3514,7 @@ export default function SupplierRiskOpsDashboard() {
                       <div className="text-3xl font-semibold">{overviewKpis.total}</div>
                       <div className="mt-1 text-sm text-muted-foreground">Unique supplier codes</div>
                       <div className="mt-2 text-xs text-muted-foreground">
-                        Not evaluated: {overviewKpis.notEvalHighRisk} •{" "}
+                        Not evaluated: {overviewKpis.notEvalHighRisk} вЂў{" "}
                         {overviewKpis.high ? Math.round((overviewKpis.notEvalHighRisk / overviewKpis.high) * 100) : 0}% of High risk
                       </div>
                     </CardContent>
@@ -3694,7 +3719,7 @@ export default function SupplierRiskOpsDashboard() {
                       <div className="text-3xl font-semibold">{overviewKpis.total}</div>
                       <div className="mt-1 text-sm text-muted-foreground">Unique supplier codes</div>
                       <div className="mt-2 text-xs text-muted-foreground">
-                        Not evaluated: {overviewKpis.notEvalHighRisk} •{" "}
+                        Not evaluated: {overviewKpis.notEvalHighRisk} вЂў{" "}
                         {overviewKpis.high ? Math.round((overviewKpis.notEvalHighRisk / overviewKpis.high) * 100) : 0}% of High risk
                       </div>
                     </CardContent>
@@ -3898,7 +3923,7 @@ export default function SupplierRiskOpsDashboard() {
                     <CardContent>
                       <div className="text-3xl font-semibold">{overviewKpis.qualityTotal}</div>
                       <div className="mt-1 text-sm text-muted-foreground">
-                        Dup {overviewKpis.dqDup} • Multi-cat {overviewKpis.multiCat} • Unknown-in-scope {overviewKpis.unknownInScope}
+                        Dup {overviewKpis.dqDup} вЂў Multi-cat {overviewKpis.multiCat} вЂў Unknown-in-scope {overviewKpis.unknownInScope}
                       </div>
                     </CardContent>
                   </Card>
@@ -3952,16 +3977,16 @@ export default function SupplierRiskOpsDashboard() {
                             <SelectValue />
                           </SelectTrigger>
                           <SelectContent>
-                            <SelectItem value="SpendDesc">Spend (High → Low)</SelectItem>
-                            <SelectItem value="SpendAsc">Spend (Low → High)</SelectItem>
-                            <SelectItem value="NameAsc">Name (A → Z)</SelectItem>
-                            <SelectItem value="NameDesc">Name (Z → A)</SelectItem>
+                            <SelectItem value="SpendDesc">Spend (High в†’ Low)</SelectItem>
+                            <SelectItem value="SpendAsc">Spend (Low в†’ High)</SelectItem>
+                            <SelectItem value="NameAsc">Name (A в†’ Z)</SelectItem>
+                            <SelectItem value="NameDesc">Name (Z в†’ A)</SelectItem>
                           </SelectContent>
                         </Select>
                       </CardTitle>
                     </CardHeader>
                     <CardContent>
-                      <div className="text-sm text-muted-foreground">High risk and not signed — sorted by your selection.</div>
+                      <div className="text-sm text-muted-foreground">High risk and not signed вЂ” sorted by your selection.</div>
                       <div className="mt-3 max-h-[240px] overflow-auto rounded-xl border">
                         <Table>
                           <TableHeader>
@@ -4441,7 +4466,7 @@ export default function SupplierRiskOpsDashboard() {
                   <Card>
                     <CardHeader>
                       <CardTitle className="flex items-center justify-between text-base">
-                        <span>Drill-down: {drillCategory ? `Category — ${drillCategory}` : `Country — ${drillCountry}`}</span>
+                        <span>Drill-down: {drillCategory ? `Category вЂ” ${drillCategory}` : `Country вЂ” ${drillCountry}`}</span>
                         <Button
                           variant="outline"
                           size="sm"
@@ -4455,7 +4480,7 @@ export default function SupplierRiskOpsDashboard() {
                       </CardTitle>
                     </CardHeader>
                     <CardContent>
-                      <div className="text-xs text-muted-foreground">Clicked chart → suppliers table (Top 500 by spend).</div>
+                      <div className="text-xs text-muted-foreground">Clicked chart в†’ suppliers table (Top 500 by spend).</div>
                       <div className="mt-3 max-h-[420px] overflow-auto rounded-2xl border">
                         <Table>
                           <TableHeader>
@@ -4601,7 +4626,7 @@ export default function SupplierRiskOpsDashboard() {
                   <Card>
                     <CardHeader>
                       <CardTitle className="flex items-center justify-between text-base">
-                        <span>Bar analysis — {barAnalysis.title}</span>
+                        <span>Bar analysis вЂ” {barAnalysis.title}</span>
                         <Button variant="outline" size="sm" onClick={() => setBarAnalysis(null)}>
                           Clear
                         </Button>
@@ -4653,7 +4678,7 @@ export default function SupplierRiskOpsDashboard() {
                           <Input
                             value={q}
                             onChange={(e) => setQ(e.target.value)}
-                            placeholder="Search supplier code, name, category, family…"
+                            placeholder="Search supplier code, name, category, familyвЂ¦"
                             className="pl-8"
                           />
                         </div>
@@ -4850,7 +4875,7 @@ export default function SupplierRiskOpsDashboard() {
                                                 <div key={c.name} className="flex items-center justify-between gap-2 rounded-xl border p-2">
                                                   <div>
                                                     <div className="text-sm font-medium">{c.name}</div>
-                                                    <div className="text-xs text-muted-foreground">Seen {c.count}×</div>
+                                                    <div className="text-xs text-muted-foreground">Seen {c.count}Г—</div>
                                                   </div>
                                                   <Button variant="outline" size="sm" onClick={() => setCanonical(s.code, c.name)}>
                                                     Use
@@ -4954,7 +4979,7 @@ export default function SupplierRiskOpsDashboard() {
                                               <Textarea
                                                 value={db.overrides[s.code]?.note ?? ""}
                                                 onChange={(e) => setSupplierOverride(s.code, { note: e.target.value })}
-                                                placeholder="Decision rationale, next steps, exceptions…"
+                                                placeholder="Decision rationale, next steps, exceptionsвЂ¦"
                                               />
                                             </div>
                                           </CardContent>
@@ -5014,7 +5039,7 @@ export default function SupplierRiskOpsDashboard() {
                                             </div>
                                             <div className="mt-2">
                                               <div className="text-xs text-muted-foreground">Title</div>
-                                              <Input value={taskTitle} onChange={(e) => setTaskTitle(e.target.value)} placeholder="Chase signature / send reminder / review docs…" />
+                                              <Input value={taskTitle} onChange={(e) => setTaskTitle(e.target.value)} placeholder="Chase signature / send reminder / review docsвЂ¦" />
                                             </div>
                                             <div className="mt-2">
                                               <div className="text-xs text-muted-foreground">Resolve by</div>
@@ -5277,7 +5302,7 @@ export default function SupplierRiskOpsDashboard() {
                   </CardHeader>
                   <CardContent>
                     <div className="text-sm text-muted-foreground">
-                      These thresholds power multi-category protection and "unknown in-scope" checks. They do not change raw data — only decision rules.
+                      These thresholds power multi-category protection and "unknown in-scope" checks. They do not change raw data вЂ” only decision rules.
                     </div>
 
                     <div className="mt-4 grid gap-3 md:grid-cols-4">
@@ -5436,19 +5461,19 @@ export default function SupplierRiskOpsDashboard() {
                         <CardContent className="p-4">
                           <div className="text-xs text-muted-foreground">Unknown in-scope</div>
                           <div className="text-2xl font-semibold">{kpis.unknownInScope}</div>
-                          <div className="mt-1 text-xs text-muted-foreground">Spend ≥ {fmtMoney(db.settings.scopeSpendThreshold)}</div>
+                          <div className="mt-1 text-xs text-muted-foreground">Spend в‰Ґ {fmtMoney(db.settings.scopeSpendThreshold)}</div>
                         </CardContent>
                       </Card>
                       <Card>
                         <CardContent className="p-4">
                           <div className="text-xs text-muted-foreground">Multi-category</div>
                           <div className="text-2xl font-semibold">{kpis.multiCat}</div>
-                          <div className="mt-1 text-xs text-muted-foreground">2nd share ≥ {(db.settings.multiCategorySecondShareThreshold * 100).toFixed(0)}%</div>
+                          <div className="mt-1 text-xs text-muted-foreground">2nd share в‰Ґ {(db.settings.multiCategorySecondShareThreshold * 100).toFixed(0)}%</div>
                         </CardContent>
                       </Card>
                       <Card>
                         <CardContent className="p-4">
-                          <div className="text-xs text-muted-foreground">Name → codes</div>
+                          <div className="text-xs text-muted-foreground">Name в†’ codes</div>
                           <div className="text-2xl font-semibold">{kpis.nameMany}</div>
                           <div className="mt-1 text-xs text-muted-foreground">Potential ID hygiene issue</div>
                         </CardContent>
@@ -5473,8 +5498,8 @@ export default function SupplierRiskOpsDashboard() {
                             <SelectItem value="All">All types</SelectItem>
                             <SelectItem value="RISK_UNKNOWN_IN_SCOPE">Unknown in-scope</SelectItem>
                             <SelectItem value="MULTI_CATEGORY_EXPOSURE">Multi-category exposure</SelectItem>
-                            <SelectItem value="CODE_MANY_NAMES">Code → many names</SelectItem>
-                            <SelectItem value="NAME_MANY_CODES">Name → many codes</SelectItem>
+                            <SelectItem value="CODE_MANY_NAMES">Code в†’ many names</SelectItem>
+                            <SelectItem value="NAME_MANY_CODES">Name в†’ many codes</SelectItem>
                             <SelectItem value="MISSING_SUBFAMILY_HIGH_SPEND">Missing sub-family</SelectItem>
                             <SelectItem value="POLICY_SUPPRESSED_BY_GUARDRAIL">Policy suppressed</SelectItem>
                           </SelectContent>
@@ -5560,7 +5585,7 @@ export default function SupplierRiskOpsDashboard() {
                     <Separator className="my-3" />
 
                     {duplicates.length === 0 ? (
-                      <EmptyState title="No code→name duplicates" subtitle="Your Supplier Dictionary looks clean." />
+                      <EmptyState title="No codeв†’name duplicates" subtitle="Your Supplier Dictionary looks clean." />
                     ) : (
                       <div className="space-y-4">
                         {selectedDuplicate ? (
@@ -5627,7 +5652,7 @@ export default function SupplierRiskOpsDashboard() {
                                   >
                                     <div>
                                       <div className="font-medium">{c.name}</div>
-                                      <div className="text-xs text-muted-foreground">Seen {c.count}×</div>
+                                      <div className="text-xs text-muted-foreground">Seen {c.count}Г—</div>
                                     </div>
                                     <Button variant="outline" size="sm" onClick={() => setCanonical(selectedDuplicate.code, c.name)}>
                                       Select
@@ -5639,7 +5664,7 @@ export default function SupplierRiskOpsDashboard() {
                           </Card>
                         ) : (
                           <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-muted-foreground">
-                            Select a "Code → many names" issue to resolve it here.
+                            Select a "Code в†’ many names" issue to resolve it here.
                           </div>
                         )}
                       </div>
@@ -5741,7 +5766,7 @@ export default function SupplierRiskOpsDashboard() {
                         </div>
                         {bulkRiskPreview ? (
                           <div className="mt-2 text-xs text-muted-foreground">
-                            Found {bulkRiskPreview.found.length} • Changes {bulkRiskPreview.changes.length} • Not found {bulkRiskPreview.notFound.length}
+                            Found {bulkRiskPreview.found.length} вЂў Changes {bulkRiskPreview.changes.length} вЂў Not found {bulkRiskPreview.notFound.length}
                           </div>
                         ) : (
                           <div className="mt-2 text-xs text-muted-foreground">Paste codes to generate a change preview.</div>
@@ -5777,7 +5802,7 @@ export default function SupplierRiskOpsDashboard() {
                         </div>
                         {bulkContractPreview ? (
                           <div className="mt-2 text-xs text-muted-foreground">
-                            Found {bulkContractPreview.found.length} • Changes {bulkContractPreview.changes.length} • Not found {bulkContractPreview.notFound.length}
+                            Found {bulkContractPreview.found.length} вЂў Changes {bulkContractPreview.changes.length} вЂў Not found {bulkContractPreview.notFound.length}
                           </div>
                         ) : (
                           <div className="mt-2 text-xs text-muted-foreground">Paste codes to generate a change preview.</div>
@@ -5810,7 +5835,7 @@ export default function SupplierRiskOpsDashboard() {
                         </div>
                         {bulkEvaluatedPreviewState ? (
                           <div className="mt-2 text-xs text-muted-foreground">
-                            Found {bulkEvaluatedPreviewState.found.length} • Changes {bulkEvaluatedPreviewState.changes.length} • Not found {bulkEvaluatedPreviewState.notFound.length}
+                            Found {bulkEvaluatedPreviewState.found.length} вЂў Changes {bulkEvaluatedPreviewState.changes.length} вЂў Not found {bulkEvaluatedPreviewState.notFound.length}
                           </div>
                         ) : (
                           <div className="mt-2 text-xs text-muted-foreground">Paste codes to generate a change preview.</div>
@@ -5832,7 +5857,7 @@ export default function SupplierRiskOpsDashboard() {
                         <Input value={bulkCanonicalName} onChange={(e) => setBulkCanonicalName(e.target.value)} placeholder="Canonical supplier name" className="mt-2" />
                         {bulkCanonicalPreview ? (
                           <div className="mt-2 text-xs text-muted-foreground">
-                            Found {bulkCanonicalPreview.found.length} • Changes {bulkCanonicalPreview.changes.length} • Not found {bulkCanonicalPreview.notFound.length}
+                            Found {bulkCanonicalPreview.found.length} вЂў Changes {bulkCanonicalPreview.changes.length} вЂў Not found {bulkCanonicalPreview.notFound.length}
                           </div>
                         ) : (
                           <div className="mt-2 text-xs text-muted-foreground">Add a canonical name + codes to preview changes.</div>
@@ -5880,7 +5905,7 @@ export default function SupplierRiskOpsDashboard() {
                           </Select>
                         </div>
                         <div className="mt-2 text-xs text-muted-foreground">
-                          In category {categoryFastPreview.total} • Eligible {categoryFastPreview.eligible} • Ambiguous {categoryFastPreview.ambiguous}
+                          In category {categoryFastPreview.total} вЂў Eligible {categoryFastPreview.eligible} вЂў Ambiguous {categoryFastPreview.ambiguous}
                         </div>
                         <div className="mt-3 flex justify-end gap-2">
                           <Button
@@ -6003,7 +6028,7 @@ export default function SupplierRiskOpsDashboard() {
                   </div>
                   <div>
                     <div className="text-xs text-muted-foreground">Title</div>
-                    <Input value={taskTitle} onChange={(e) => setTaskTitle(e.target.value)} placeholder="Send contract / chase signature / review docs…" />
+                    <Input value={taskTitle} onChange={(e) => setTaskTitle(e.target.value)} placeholder="Send contract / chase signature / review docsвЂ¦" />
                   </div>
                   <div>
                     <div className="text-xs text-muted-foreground">Resolve by</div>
@@ -6011,7 +6036,7 @@ export default function SupplierRiskOpsDashboard() {
                   </div>
                   <div>
                     <div className="text-xs text-muted-foreground">Note</div>
-                    <Textarea value={taskNote} onChange={(e) => setTaskNote(e.target.value)} placeholder="What was done, what is blocked, next step, by whom…" />
+                    <Textarea value={taskNote} onChange={(e) => setTaskNote(e.target.value)} placeholder="What was done, what is blocked, next step, by whomвЂ¦" />
                   </div>
                   <div className="flex justify-end">
                     <Button className="gap-2" onClick={() => addTask()}>
@@ -6074,14 +6099,14 @@ export default function SupplierRiskOpsDashboard() {
                             </div>
                             <div className="mt-1 text-xs text-muted-foreground">
                               Owner: {t.owner}
-                              {t.supplierCode ? ` • Supplier: ${t.supplierCode}` : ""}
-                              {t.supplierName ? ` • ${t.supplierName}` : ""}
+                              {t.supplierCode ? ` вЂў Supplier: ${t.supplierCode}` : ""}
+                              {t.supplierName ? ` вЂў ${t.supplierName}` : ""}
                             </div>
                             <div className="mt-1 text-xs text-muted-foreground">
                               Created: {t.createdAt ? fmtDate(t.createdAt) : "N/A"}
-                              {t.dueDate ? ` • Due: ${t.dueDate}` : ""}
+                              {t.dueDate ? ` вЂў Due: ${t.dueDate}` : ""}
                               {t.contactName || t.contactEmail
-                                ? ` • Contact: ${t.contactName || ""}${t.contactEmail ? ` (${t.contactEmail})` : ""}`
+                                ? ` вЂў Contact: ${t.contactName || ""}${t.contactEmail ? ` (${t.contactEmail})` : ""}`
                                 : ""}
                             </div>
                             {t.note ? <div className="mt-2 text-sm">{t.note}</div> : null}
@@ -6187,7 +6212,7 @@ export default function SupplierRiskOpsDashboard() {
                           <Badge variant="destructive">Urgent call</Badge>
                         </div>
                       <div className="mt-1 text-xs text-muted-foreground">
-                        Due: {t.dueDate ?? t.date} • Status: Ignore Risk
+                        Due: {t.dueDate ?? t.date} вЂў Status: Ignore Risk
                       </div>
                     </div>
                   ))}
@@ -6210,7 +6235,7 @@ export default function SupplierRiskOpsDashboard() {
                 <span className="font-medium text-foreground">Golden key:</span> Supplier Code. Names are attributes, not identifiers.
               </div>
               <div>
-                <span className="font-medium text-foreground">Hierarchy of truth:</span> Supplier overrides → Category/Family rules → Data flags.
+                <span className="font-medium text-foreground">Hierarchy of truth:</span> Supplier overrides в†’ Category/Family rules в†’ Data flags.
               </div>
               <div>
                 <span className="font-medium text-foreground">Fast action:</span> Worklist is High risk & not signed, sorted by spend.
