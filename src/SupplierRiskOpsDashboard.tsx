@@ -112,7 +112,7 @@ type UndoBatch = {
   id: string;
   ts: string;
   actor: string;
-  action: "risk" | "contractStatus" | "canonicalName" | "categoryFastAction" | "evaluated";
+  action: "risk" | "contractStatus" | "canonicalName" | "categoryFastAction" | "evaluated" | "bulkMark";
   summary: string;
   items: { code: string; prev?: SupplierOverride }[];
 };
@@ -869,11 +869,12 @@ function buildSupplierMaster(
     const risk: RiskLevel = ov?.risk ?? (dataRisk !== "Unknown" ? dataRisk : policyRisk);
 
     // "Evaluated" means we have a decision that is not Unknown
-    const autoEvaluated =
-      evaluatedFromFlags(flags) ||
-      (ov?.risk !== undefined && ov?.risk !== "Unknown") ||
-      (dataRisk === "Unknown" && policyRisk !== "Unknown");
-    const evaluated = ov?.evaluated !== undefined ? ov.evaluated : autoEvaluated;
+    const evaluated =
+      ov?.evaluated !== undefined
+        ? ov.evaluated
+        : evaluatedFromFlags(flags) ||
+          (ov?.risk !== undefined && ov?.risk !== "Unknown") ||
+          (dataRisk === "Unknown" && policyRisk !== "Unknown");
 
     // Contract status: override wins, else infer from status strings
     const statusStrings = rows.map((r) => r.status).filter(Boolean) as string[];
@@ -1219,9 +1220,9 @@ function fmtDate(d: string) {
   }
 }
 
-function shortLabel(label: string, max = 28) {
-  if (!label) return "";
-  return label.length > max ? `${label.slice(0, max - 1)}…` : label;
+function shortLabel(label: string, max = 22) {
+  if (label.length <= max) return label;
+  return `${label.slice(0, max - 1)}…`;
 }
 
 // -----------------------------
@@ -1272,8 +1273,7 @@ export default function SupplierRiskOpsDashboard() {
   const [db, setDB] = useState<PersistedDB>(() => loadDB());
   const [actor, setActor] = useState("Hero");
   const [activeTab, setActiveTab] = useState("overview");
-  const [overviewScope, setOverviewScope] = useState<"Overall" | "Austria" | "Switzerland">("Overall");
-  const [barAnalysis, setBarAnalysis] = useState<{ title: string; details: Record<string, any> } | null>(null);
+  const [globalCountry, setGlobalCountry] = useState("Overall");
 
   // filters
   const [q, setQ] = useState("");
@@ -1308,12 +1308,9 @@ export default function SupplierRiskOpsDashboard() {
   const [bulkRisk, setBulkRisk] = useState<RiskLevel>("High");
   const [bulkContract, setBulkContract] = useState<ContractStatus>("Sent");
   const [bulkCanonicalName, setBulkCanonicalName] = useState("");
-  const [bulkEvaluated, setBulkEvaluated] = useState<"Evaluated" | "Not evaluated">("Evaluated");
+  const [bulkEvaluated, setBulkEvaluated] = useState<EvaluationChoice>("Evaluated");
   const [bulkNameQuery, setBulkNameQuery] = useState("");
   const [bulkNameSelected, setBulkNameSelected] = useState<Set<string>>(new Set());
-
-  // supplier selection bulk actions
-  const [selectedSupplierCodes, setSelectedSupplierCodes] = useState<Set<string>>(new Set());
 
   // category fast action (eligible-only) - uses spend dominance guardrail
   const [fastCategory, setFastCategory] = useState<string>("");
@@ -1338,7 +1335,7 @@ export default function SupplierRiskOpsDashboard() {
   const [fastQueueSort, setFastQueueSort] = useState<"SpendDesc" | "SpendAsc" | "NameAsc" | "NameDesc">("SpendDesc");
   const [categoryTopSort, setCategoryTopSort] = useState<"HighRiskDesc" | "TotalDesc">("HighRiskDesc");
   const [categorySpendSort, setCategorySpendSort] = useState<"HighRiskDesc" | "TotalDesc">("HighRiskDesc");
-  const [drillSort, setDrillSort] = useState<{ key: string; dir: "asc" | "desc" }>({ key: "spendInSlice", dir: "desc" });
+  const [drillSortState, setDrillSortState] = useState<{ key: string; dir: "asc" | "desc" }>({ key: "spendInSlice", dir: "desc" });
   const [categoryTableSort, setCategoryTableSort] = useState<{ key: string; dir: "asc" | "desc" }>({ key: "highRiskSuppliers", dir: "desc" });
   const [barInsight, setBarInsight] = useState<{ title: string; label: string; details: string[] } | null>(null);
 
@@ -1518,12 +1515,26 @@ export default function SupplierRiskOpsDashboard() {
   }, [overviewSuppliers]);
 
   const topRiskyByCount = useMemo(() => {
-    return [...overviewCategoryMetrics].sort((a, b) => b[topCategorySortBy] - a[topCategorySortBy]);
-  }, [overviewCategoryMetrics, topCategorySortBy]);
+    return [...categoryMetrics]
+      .filter((c) => c.suppliers >= 10)
+      .sort((a, b) =>
+        categoryTopSort === "HighRiskDesc"
+          ? b.highRiskSuppliers - a.highRiskSuppliers
+          : b.suppliers - a.suppliers
+      )
+      .slice(0, 10);
+  }, [categoryMetrics, categoryTopSort]);
 
   const topRiskyBySpend = useMemo(() => {
-    return [...overviewCategoryMetrics].sort((a, b) => b[topSpendSortBy] - a[topSpendSortBy]);
-  }, [overviewCategoryMetrics, topSpendSortBy]);
+    return [...categoryMetrics]
+      .filter((c) => Math.abs(c.totalSpend) > 0)
+      .sort((a, b) =>
+        categorySpendSort === "HighRiskDesc"
+          ? b.highRiskSpend - a.highRiskSpend
+          : b.totalSpend - a.totalSpend
+      )
+      .slice(0, 10);
+  }, [categoryMetrics, categorySpendSort]);
 
   const topCountriesByCount = useMemo(() => {
     return [...overviewCountryMetrics].sort((a, b) => b.suppliers - a.suppliers);
@@ -1614,7 +1625,7 @@ export default function SupplierRiskOpsDashboard() {
   const drillSuppliers = useMemo(() => {
     if (!drillCategory) return [] as any[];
     const by: Record<string, { spend: number; po: number }> = {};
-    for (const r of overviewFactRows) {
+    for (const r of scopedFactRows) {
       if (safeStr(r.category) !== drillCategory) continue;
       const code = normCode(r.supplierCode);
       if (!code) continue;
@@ -1640,12 +1651,12 @@ export default function SupplierRiskOpsDashboard() {
       })
       .sort((a: any, b: any) => b.spendInSlice - a.spendInSlice)
       .slice(0, 500);
-  }, [drillCategory, overviewFactRows, overviewSupplierByCode]);
+  }, [drillCategory, scopedFactRows, supplierByCode]);
 
   const drillSuppliersByCountry = useMemo(() => {
     if (!drillCountry) return [] as any[];
     const by: Record<string, { spend: number; po: number }> = {};
-    for (const r of overviewFactRows) {
+    for (const r of scopedFactRows) {
       const c = safeStr(r.country) || "(unknown)";
       if (c !== drillCountry) continue;
       const code = normCode(r.supplierCode);
@@ -1672,30 +1683,7 @@ export default function SupplierRiskOpsDashboard() {
       })
       .sort((a: any, b: any) => b.spendInSlice - a.spendInSlice)
       .slice(0, 500);
-  }, [drillCountry, overviewFactRows, overviewSupplierByCode]);
-
-  const drillSuppliersSorted = useMemo(() => {
-    const data = drillCategory ? drillSuppliers : drillSuppliersByCountry;
-    const dir = drillSort.dir === "asc" ? 1 : -1;
-    return [...data].sort((a: any, b: any) => {
-      switch (drillSort.key) {
-        case "supplier":
-          return dir * a.canonicalName.localeCompare(b.canonicalName);
-        case "risk":
-          return dir * a.risk.localeCompare(b.risk);
-        case "contract":
-          return dir * a.contractStatus.localeCompare(b.contractStatus);
-        case "poSlice":
-          return dir * (a.poInSlice - b.poInSlice);
-        case "spendSlice":
-          return dir * (a.spendInSlice - b.spendInSlice);
-        case "totalSpend":
-          return dir * (a.totalSpend - b.totalSpend);
-        default:
-          return 0;
-      }
-    });
-  }, [drillCategory, drillSuppliers, drillSuppliersByCountry, drillSort]);
+  }, [drillCountry, scopedFactRows, supplierByCode]);
 
   const supplierFiltered = useMemo(() => {
     const needle = q.trim().toLowerCase();
@@ -1894,6 +1882,38 @@ export default function SupplierRiskOpsDashboard() {
     });
     return sorted;
   }, [drillCategory, drillSuppliers, drillSuppliersByCountry, drillSort]);
+
+  function jumpToSupplier(code: string) {
+    setQ(code);
+    setActiveTab("suppliers");
+  }
+
+  const worklistSorted = useMemo(() => {
+    const sorted = [...worklist];
+    const dir = fastQueueSort.includes("Asc") ? 1 : -1;
+    if (fastQueueSort.startsWith("Spend")) {
+      sorted.sort((a, b) => (a.totalSpend - b.totalSpend) * dir);
+    } else {
+      sorted.sort((a, b) => a.canonicalName.localeCompare(b.canonicalName) * dir);
+    }
+    return sorted;
+  }, [worklist, fastQueueSort]);
+
+  const drillRows = useMemo(() => {
+    const rows = (drillCategory ? drillSuppliers : drillSuppliersByCountry) as any[];
+    const sorted = [...rows];
+    const dir = drillSortState.dir === "asc" ? 1 : -1;
+    const orderRisk: Record<RiskLevel, number> = { High: 3, "Non-risk": 2, Unknown: 1 };
+    sorted.sort((a, b) => {
+      const key = drillSortState.key;
+      if (key === "risk") return (orderRisk[a.risk] - orderRisk[b.risk]) * dir;
+      if (key === "contractStatus") return String(a.contractStatus).localeCompare(String(b.contractStatus)) * dir;
+      if (key === "canonicalName") return String(a.canonicalName).localeCompare(String(b.canonicalName)) * dir;
+      if (key === "categories") return String(a.categories?.[0] ?? "").localeCompare(String(b.categories?.[0] ?? "")) * dir;
+      return (Number(a[key] ?? 0) - Number(b[key] ?? 0)) * dir;
+    });
+    return sorted;
+  }, [drillCategory, drillSuppliers, drillSuppliersByCountry, drillSortState]);
 
   function jumpToSupplier(code: string) {
     setQ(code);
@@ -2235,7 +2255,7 @@ export default function SupplierRiskOpsDashboard() {
     return { found, notFound, changes };
   }
 
-  function planBulkEvaluated(codes: string[], target: "Evaluated" | "Not evaluated") {
+  function planBulkEvaluated(codes: string[], target: EvaluationChoice) {
     const found: string[] = [];
     const notFound: string[] = [];
     const changes: { code: string; prev?: SupplierOverride; next?: SupplierOverride }[] = [];
@@ -2248,13 +2268,61 @@ export default function SupplierRiskOpsDashboard() {
       }
       found.push(c);
       const prev = db.overrides[c];
-      const nextEvaluated = target === "Evaluated";
+      const effective = s.evaluated;
 
-      if (prev?.evaluated === nextEvaluated) continue;
-      if (prev?.evaluated === undefined && s.evaluated === nextEvaluated) continue;
+      if (target === "Clear") {
+        if (prev?.evaluated === undefined) continue;
+        const patched = cleanOverride({ ...prev, evaluated: undefined });
+        changes.push({ code: c, prev: prev ? { ...prev } : undefined, next: patched });
+        continue;
+      }
 
-      const patched = cleanOverride({ ...(prev || {}), evaluated: nextEvaluated });
+      const nextValue = target === "Evaluated";
+      if (prev?.evaluated === nextValue) continue;
+      if (prev?.evaluated === undefined && effective === nextValue) continue;
+
+      const patched = cleanOverride({ ...(prev || {}), evaluated: nextValue });
       changes.push({ code: c, prev: prev ? { ...prev } : undefined, next: patched });
+    }
+
+    return { found, notFound, changes };
+  }
+
+  function planBulkMark(codes: string[], riskChoice: BulkRiskChoice, evalChoice: BulkEvalChoice) {
+    const found: string[] = [];
+    const notFound: string[] = [];
+    const changes: { code: string; prev?: SupplierOverride; next?: SupplierOverride }[] = [];
+
+    for (const c of codes) {
+      const s = supplierByCode.get(c);
+      if (!s) {
+        notFound.push(c);
+        continue;
+      }
+      found.push(c);
+      const prev = db.overrides[c];
+      let next: SupplierOverride | undefined = prev ? { ...prev } : {};
+
+      if (riskChoice !== "No change") {
+        if (riskChoice === "Unknown") {
+          next = { ...(next || {}), risk: undefined };
+        } else {
+          next = { ...(next || {}), risk: riskChoice };
+        }
+      }
+
+      if (evalChoice !== "No change") {
+        if (evalChoice === "Clear") {
+          next = { ...(next || {}), evaluated: undefined };
+        } else {
+          next = { ...(next || {}), evaluated: evalChoice === "Evaluated" };
+        }
+      }
+
+      const cleaned = cleanOverride(next);
+      const prevClean = cleanOverride(prev);
+      if (JSON.stringify(prevClean ?? {}) === JSON.stringify(cleaned ?? {})) continue;
+      changes.push({ code: c, prev: prev ? { ...prev } : undefined, next: cleaned });
     }
 
     return { found, notFound, changes };
@@ -2386,25 +2454,53 @@ export default function SupplierRiskOpsDashboard() {
     });
   }
 
-  function bulkApplyEvaluated(codesOverride?: string[]) {
-    const codes = codesOverride ?? parseCodes(bulkCodes);
+  function bulkApplyEvaluated() {
+    const codes = parseCodes(bulkCodes);
     if (!codes.length) return;
 
     const plan = planBulkEvaluated(codes, bulkEvaluated);
     const didApply = applyPlan(
       "evaluated",
-      `Bulk evaluated ${bulkEvaluated === "Evaluated" ? "set" : "cleared"} for ${plan.changes.length} suppliers`,
+      `Bulk evaluated ${bulkEvaluated === "Clear" ? "cleared" : "set"} for ${plan.changes.length} suppliers`,
       plan
     );
 
     pushLog({
       type: "BULK_UPDATE",
       summary: didApply
-        ? `Bulk evaluated ${bulkEvaluated === "Evaluated" ? "set" : "cleared"} for ${plan.changes.length} suppliers`
-        : `Bulk evaluated: no changes (already compliant)`,
+        ? `Bulk evaluated ${bulkEvaluated === "Clear" ? "cleared" : "set"} for ${plan.changes.length} suppliers`
+        : `Bulk evaluated: no changes`,
       details: {
         action: "evaluated",
         evaluated: bulkEvaluated,
+        changed: plan.changes.length,
+        found: plan.found.length,
+        notFound: plan.notFound.length,
+        notFoundSample: plan.notFound.slice(0, 25),
+        sample: plan.changes.slice(0, 20).map((x) => x.code),
+      },
+    });
+  }
+
+  function bulkApplyMarkedSuppliers() {
+    const codes = Array.from(selectedSuppliers);
+    if (!codes.length) return;
+    if (bulkMarkRisk === "No change" && bulkMarkEvaluated === "No change") return;
+
+    const plan = planBulkMark(codes, bulkMarkRisk, bulkMarkEvaluated);
+    const didApply = applyPlan(
+      "bulkMark",
+      `Bulk mark applied to ${plan.changes.length} suppliers`,
+      plan
+    );
+
+    pushLog({
+      type: "BULK_UPDATE",
+      summary: didApply ? `Bulk mark applied to ${plan.changes.length} suppliers` : `Bulk mark: no changes`,
+      details: {
+        action: "bulkMark",
+        risk: bulkMarkRisk,
+        evaluated: bulkMarkEvaluated,
         changed: plan.changes.length,
         found: plan.found.length,
         notFound: plan.notFound.length,
@@ -2828,11 +2924,16 @@ export default function SupplierRiskOpsDashboard() {
                           <Tooltip />
                           <Bar
                             dataKey="value"
+                            fill="#93c5fd"
                             onClick={(d: any) =>
-                              pushBarAnalysis("Funnel stage", {
-                                stage: d?.payload?.stage,
-                                value: d?.payload?.value,
-                                scope: overviewScope,
+                              setBarInsight({
+                                title: "Funnel stage",
+                                label: d?.payload?.stage ?? "Unknown",
+                                details: [
+                                  `Value: ${d?.payload?.value ?? 0}`,
+                                  `Scope: ${globalCountry}`,
+                                  "Source: Supplier Master derived from imported fact rows.",
+                                ],
                               })
                             }
                           />
@@ -2845,26 +2946,15 @@ export default function SupplierRiskOpsDashboard() {
                     <CardHeader>
                       <CardTitle className="flex items-center justify-between text-base">
                         <span>Fast Action Queue (Top 200)</span>
-                        <Select
-                          value={`${fastActionSort.key}:${fastActionSort.dir}`}
-                          onValueChange={(v: any) => {
-                            const [key, dir] = String(v).split(":");
-                            setFastActionSort({
-                              key: key as typeof fastActionSort.key,
-                              dir: dir as typeof fastActionSort.dir,
-                            });
-                          }}
-                        >
-                          <SelectTrigger className="h-8 w-[200px]">
+                        <Select value={fastQueueSort} onValueChange={(v: any) => setFastQueueSort(v)}>
+                          <SelectTrigger className="w-[190px]">
                             <SelectValue />
                           </SelectTrigger>
                           <SelectContent>
-                            <SelectItem value="spend:desc">Spend (desc)</SelectItem>
-                            <SelectItem value="spend:asc">Spend (asc)</SelectItem>
-                            <SelectItem value="name:asc">Name (A→Z)</SelectItem>
-                            <SelectItem value="name:desc">Name (Z→A)</SelectItem>
-                            <SelectItem value="contract:asc">Contract (A→Z)</SelectItem>
-                            <SelectItem value="contract:desc">Contract (Z→A)</SelectItem>
+                            <SelectItem value="SpendDesc">Spend (High → Low)</SelectItem>
+                            <SelectItem value="SpendAsc">Spend (Low → High)</SelectItem>
+                            <SelectItem value="NameAsc">Name (A → Z)</SelectItem>
+                            <SelectItem value="NameDesc">Name (Z → A)</SelectItem>
                           </SelectContent>
                         </Select>
                       </CardTitle>
@@ -2882,20 +2972,17 @@ export default function SupplierRiskOpsDashboard() {
                             </TableRow>
                           </TableHeader>
                           <TableBody>
-                            {worklist.slice(0, 12).map((s) => (
+                            {worklistSorted.slice(0, 12).map((s) => (
                               <TableRow key={s.code}>
                                 <TableCell>
                                   <button
                                     type="button"
-                                    className="text-left"
-                                    onClick={() => {
-                                      setQ(s.code);
-                                      setActiveTab("suppliers");
-                                    }}
+                                    className="text-left font-medium text-primary hover:underline"
+                                    onClick={() => jumpToSupplier(s.code)}
                                   >
-                                    <div className="font-medium text-primary">{s.canonicalName}</div>
-                                    <div className="text-xs text-muted-foreground">{s.code}</div>
+                                    {s.canonicalName}
                                   </button>
+                                  <div className="text-xs text-muted-foreground">{s.code}</div>
                                 </TableCell>
                                 <TableCell>
                                   <RiskBadge risk={s.risk} />
@@ -2922,13 +3009,13 @@ export default function SupplierRiskOpsDashboard() {
                     <CardHeader>
                       <CardTitle className="flex items-center justify-between text-base">
                         <span>Top risky categories (by suppliers)</span>
-                        <Select value={topCategorySortBy} onValueChange={(v: any) => setTopCategorySortBy(v)}>
-                          <SelectTrigger className="h-8 w-[180px]">
+                        <Select value={categoryTopSort} onValueChange={(v: any) => setCategoryTopSort(v)}>
+                          <SelectTrigger className="w-[190px]">
                             <SelectValue />
                           </SelectTrigger>
                           <SelectContent>
-                            <SelectItem value="highRiskSuppliers">Sort by high risk</SelectItem>
-                            <SelectItem value="suppliers">Sort by total suppliers</SelectItem>
+                            <SelectItem value="HighRiskDesc">High risk (desc)</SelectItem>
+                            <SelectItem value="TotalDesc">Total suppliers (desc)</SelectItem>
                           </SelectContent>
                         </Select>
                       </CardTitle>
@@ -2942,7 +3029,7 @@ export default function SupplierRiskOpsDashboard() {
                         >
                           <CartesianGrid strokeDasharray="3 3" />
                           <XAxis type="number" />
-                          <YAxis dataKey="category" type="category" width={220} interval={0} tickFormatter={(v: any) => shortLabel(String(v))} />
+                          <YAxis dataKey="category" type="category" width={160} interval={0} tickFormatter={(v: any) => shortLabel(String(v))} />
                           <Tooltip />
                           <Legend />
                           <Bar
@@ -2950,28 +3037,34 @@ export default function SupplierRiskOpsDashboard() {
                             name="High risk suppliers"
                             fill="#fca5a5"
                             onClick={(d: any) => {
-                              setDrillCategory(d?.payload?.category ?? null);
-                              pushBarAnalysis("Category by suppliers", {
-                                category: d?.payload?.category,
-                                highRiskSuppliers: d?.payload?.highRiskSuppliers,
-                                suppliers: d?.payload?.suppliers,
-                                riskShare: d?.payload?.riskShare,
-                                scope: overviewScope,
+                              const category = d?.payload?.category ?? null;
+                              setDrillCategory(category);
+                              setBarInsight({
+                                title: "Category risk (by suppliers)",
+                                label: category ?? "Unknown",
+                                details: [
+                                  `High risk suppliers: ${d?.payload?.highRiskSuppliers ?? 0}`,
+                                  `Total suppliers: ${d?.payload?.suppliers ?? 0}`,
+                                  `Scope: ${globalCountry}`,
+                                ],
                               });
                             }}
                           />
                           <Bar
                             dataKey="suppliers"
                             name="Total suppliers"
-                            fill="#93c5fd"
+                            fill="#e5e7eb"
                             onClick={(d: any) => {
-                              setDrillCategory(d?.payload?.category ?? null);
-                              pushBarAnalysis("Category by suppliers", {
-                                category: d?.payload?.category,
-                                highRiskSuppliers: d?.payload?.highRiskSuppliers,
-                                suppliers: d?.payload?.suppliers,
-                                riskShare: d?.payload?.riskShare,
-                                scope: overviewScope,
+                              const category = d?.payload?.category ?? null;
+                              setDrillCategory(category);
+                              setBarInsight({
+                                title: "Category volume (by suppliers)",
+                                label: category ?? "Unknown",
+                                details: [
+                                  `Total suppliers: ${d?.payload?.suppliers ?? 0}`,
+                                  `High risk suppliers: ${d?.payload?.highRiskSuppliers ?? 0}`,
+                                  `Scope: ${globalCountry}`,
+                                ],
                               });
                             }}
                           />
@@ -2984,13 +3077,13 @@ export default function SupplierRiskOpsDashboard() {
                     <CardHeader>
                       <CardTitle className="flex items-center justify-between text-base">
                         <span>Top risky categories (by spend)</span>
-                        <Select value={topSpendSortBy} onValueChange={(v: any) => setTopSpendSortBy(v)}>
-                          <SelectTrigger className="h-8 w-[180px]">
+                        <Select value={categorySpendSort} onValueChange={(v: any) => setCategorySpendSort(v)}>
+                          <SelectTrigger className="w-[190px]">
                             <SelectValue />
                           </SelectTrigger>
                           <SelectContent>
-                            <SelectItem value="highRiskSpend">Sort by high risk spend</SelectItem>
-                            <SelectItem value="totalSpend">Sort by total spend</SelectItem>
+                            <SelectItem value="HighRiskDesc">High risk spend (desc)</SelectItem>
+                            <SelectItem value="TotalDesc">Total spend (desc)</SelectItem>
                           </SelectContent>
                         </Select>
                       </CardTitle>
@@ -3004,7 +3097,7 @@ export default function SupplierRiskOpsDashboard() {
                         >
                           <CartesianGrid strokeDasharray="3 3" />
                           <XAxis type="number" tickFormatter={(v: any) => fmtMoney(Number(v))} />
-                          <YAxis dataKey="category" type="category" width={220} interval={0} tickFormatter={(v: any) => shortLabel(String(v))} />
+                          <YAxis dataKey="category" type="category" width={160} interval={0} tickFormatter={(v: any) => shortLabel(String(v))} />
                           <Tooltip formatter={(v: any) => fmtMoney(Number(v))} />
                           <Legend />
                           <Bar
@@ -3012,12 +3105,16 @@ export default function SupplierRiskOpsDashboard() {
                             name="High risk spend"
                             fill="#fca5a5"
                             onClick={(d: any) => {
-                              setDrillCategory(d?.payload?.category ?? null);
-                              pushBarAnalysis("Category by spend", {
-                                category: d?.payload?.category,
-                                highRiskSpend: d?.payload?.highRiskSpend,
-                                totalSpend: d?.payload?.totalSpend,
-                                scope: overviewScope,
+                              const category = d?.payload?.category ?? null;
+                              setDrillCategory(category);
+                              setBarInsight({
+                                title: "Category risk (by spend)",
+                                label: category ?? "Unknown",
+                                details: [
+                                  `High risk spend: ${fmtMoney(Number(d?.payload?.highRiskSpend ?? 0))}`,
+                                  `Total spend: ${fmtMoney(Number(d?.payload?.totalSpend ?? 0))}`,
+                                  `Scope: ${globalCountry}`,
+                                ],
                               });
                             }}
                           />
@@ -3026,12 +3123,16 @@ export default function SupplierRiskOpsDashboard() {
                             name="Total spend"
                             fill="#93c5fd"
                             onClick={(d: any) => {
-                              setDrillCategory(d?.payload?.category ?? null);
-                              pushBarAnalysis("Category by spend", {
-                                category: d?.payload?.category,
-                                highRiskSpend: d?.payload?.highRiskSpend,
-                                totalSpend: d?.payload?.totalSpend,
-                                scope: overviewScope,
+                              const category = d?.payload?.category ?? null;
+                              setDrillCategory(category);
+                              setBarInsight({
+                                title: "Category volume (by spend)",
+                                label: category ?? "Unknown",
+                                details: [
+                                  `Total spend: ${fmtMoney(Number(d?.payload?.totalSpend ?? 0))}`,
+                                  `High risk spend: ${fmtMoney(Number(d?.payload?.highRiskSpend ?? 0))}`,
+                                  `Scope: ${globalCountry}`,
+                                ],
                               });
                             }}
                           />
@@ -3063,26 +3164,34 @@ export default function SupplierRiskOpsDashboard() {
                             name="High risk"
                             fill="#fca5a5"
                             onClick={(d: any) => {
-                              setDrillCountry(d?.payload?.country ?? null);
-                              pushBarAnalysis("Country by suppliers", {
-                                country: d?.payload?.country,
-                                highRiskSuppliers: d?.payload?.highRiskSuppliers,
-                                suppliers: d?.payload?.suppliers,
-                                scope: overviewScope,
+                              const country = d?.payload?.country ?? null;
+                              setDrillCountry(country);
+                              setBarInsight({
+                                title: "Country risk (by suppliers)",
+                                label: country ?? "Unknown",
+                                details: [
+                                  `High risk suppliers: ${d?.payload?.highRiskSuppliers ?? 0}`,
+                                  `Total suppliers: ${d?.payload?.suppliers ?? 0}`,
+                                  `Scope: ${globalCountry}`,
+                                ],
                               });
                             }}
                           />
                           <Bar
                             dataKey="suppliers"
                             name="Total"
-                            fill="#93c5fd"
+                            fill="#e5e7eb"
                             onClick={(d: any) => {
-                              setDrillCountry(d?.payload?.country ?? null);
-                              pushBarAnalysis("Country by suppliers", {
-                                country: d?.payload?.country,
-                                highRiskSuppliers: d?.payload?.highRiskSuppliers,
-                                suppliers: d?.payload?.suppliers,
-                                scope: overviewScope,
+                              const country = d?.payload?.country ?? null;
+                              setDrillCountry(country);
+                              setBarInsight({
+                                title: "Country volume (by suppliers)",
+                                label: country ?? "Unknown",
+                                details: [
+                                  `Total suppliers: ${d?.payload?.suppliers ?? 0}`,
+                                  `High risk suppliers: ${d?.payload?.highRiskSuppliers ?? 0}`,
+                                  `Scope: ${globalCountry}`,
+                                ],
                               });
                             }}
                           />
@@ -3106,26 +3215,32 @@ export default function SupplierRiskOpsDashboard() {
                           <Bar
                             dataKey="suppliers"
                             name="Suppliers"
-                            fill="#93c5fd"
+                            fill="#e5e7eb"
                             onClick={(d: any) =>
-                              pushBarAnalysis("Risk mix (suppliers)", {
-                                risk: d?.payload?.risk,
-                                suppliers: d?.payload?.suppliers,
-                                spend: d?.payload?.spend,
-                                scope: overviewScope,
+                              setBarInsight({
+                                title: "Risk mix (suppliers)",
+                                label: d?.payload?.risk ?? "Unknown",
+                                details: [
+                                  `Suppliers: ${d?.payload?.suppliers ?? 0}`,
+                                  `Spend: ${fmtMoney(Number(d?.payload?.spend ?? 0))}`,
+                                  `Scope: ${globalCountry}`,
+                                ],
                               })
                             }
                           />
                           <Bar
                             dataKey="spend"
                             name="Spend"
-                            fill="#fca5a5"
+                            fill="#93c5fd"
                             onClick={(d: any) =>
-                              pushBarAnalysis("Risk mix (spend)", {
-                                risk: d?.payload?.risk,
-                                suppliers: d?.payload?.suppliers,
-                                spend: d?.payload?.spend,
-                                scope: overviewScope,
+                              setBarInsight({
+                                title: "Risk mix (spend)",
+                                label: d?.payload?.risk ?? "Unknown",
+                                details: [
+                                  `Spend: ${fmtMoney(Number(d?.payload?.spend ?? 0))}`,
+                                  `Suppliers: ${d?.payload?.suppliers ?? 0}`,
+                                  `Scope: ${globalCountry}`,
+                                ],
                               })
                             }
                           />
@@ -3157,12 +3272,16 @@ export default function SupplierRiskOpsDashboard() {
                             name="High risk spend"
                             fill="#fca5a5"
                             onClick={(d: any) => {
-                              setDrillCountry(d?.payload?.country ?? null);
-                              pushBarAnalysis("Country by spend", {
-                                country: d?.payload?.country,
-                                highRiskSpend: d?.payload?.highRiskSpend,
-                                totalSpend: d?.payload?.totalSpend,
-                                scope: overviewScope,
+                              const country = d?.payload?.country ?? null;
+                              setDrillCountry(country);
+                              setBarInsight({
+                                title: "Country risk (by spend)",
+                                label: country ?? "Unknown",
+                                details: [
+                                  `High risk spend: ${fmtMoney(Number(d?.payload?.highRiskSpend ?? 0))}`,
+                                  `Total spend: ${fmtMoney(Number(d?.payload?.totalSpend ?? 0))}`,
+                                  `Scope: ${globalCountry}`,
+                                ],
                               });
                             }}
                           />
@@ -3171,12 +3290,16 @@ export default function SupplierRiskOpsDashboard() {
                             name="Total spend"
                             fill="#93c5fd"
                             onClick={(d: any) => {
-                              setDrillCountry(d?.payload?.country ?? null);
-                              pushBarAnalysis("Country by spend", {
-                                country: d?.payload?.country,
-                                highRiskSpend: d?.payload?.highRiskSpend,
-                                totalSpend: d?.payload?.totalSpend,
-                                scope: overviewScope,
+                              const country = d?.payload?.country ?? null;
+                              setDrillCountry(country);
+                              setBarInsight({
+                                title: "Country volume (by spend)",
+                                label: country ?? "Unknown",
+                                details: [
+                                  `Total spend: ${fmtMoney(Number(d?.payload?.totalSpend ?? 0))}`,
+                                  `High risk spend: ${fmtMoney(Number(d?.payload?.highRiskSpend ?? 0))}`,
+                                  `Scope: ${globalCountry}`,
+                                ],
                               });
                             }}
                           />
@@ -3207,13 +3330,16 @@ export default function SupplierRiskOpsDashboard() {
                             name="High risk share"
                             fill="#fca5a5"
                             onClick={(d: any) => {
-                              setDrillCountry(d?.payload?.country ?? null);
-                              pushBarAnalysis("Country risk share", {
-                                country: d?.payload?.country,
-                                riskShare: d?.payload?.riskShare,
-                                suppliers: d?.payload?.suppliers,
-                                highRiskSuppliers: d?.payload?.highRiskSuppliers,
-                                scope: overviewScope,
+                              const country = d?.payload?.country ?? null;
+                              setDrillCountry(country);
+                              setBarInsight({
+                                title: "Country risk share",
+                                label: country ?? "Unknown",
+                                details: [
+                                  `High risk share: ${Math.round(Number(d?.payload?.riskShare ?? 0) * 100)}%`,
+                                  `Suppliers: ${d?.payload?.suppliers ?? 0}`,
+                                  `Scope: ${globalCountry}`,
+                                ],
                               });
                             }}
                           />
@@ -3267,17 +3393,108 @@ export default function SupplierRiskOpsDashboard() {
                         <Table>
                           <TableHeader>
                             <TableRow>
-                              <TableHead className="cursor-pointer" onClick={() => setDrillSortKey("supplier")}>Supplier</TableHead>
-                              <TableHead className="cursor-pointer" onClick={() => setDrillSortKey("risk")}>Risk</TableHead>
-                              <TableHead className="cursor-pointer" onClick={() => setDrillSortKey("contract")}>Contract</TableHead>
-                              <TableHead className="cursor-pointer text-right" onClick={() => setDrillSortKey("poSlice")}>PO (slice)</TableHead>
-                              <TableHead className="cursor-pointer text-right" onClick={() => setDrillSortKey("spendSlice")}>Spend (slice)</TableHead>
-                              <TableHead className="cursor-pointer text-right" onClick={() => setDrillSortKey("totalSpend")}>Overall spend</TableHead>
-                              <TableHead>Category</TableHead>
+                              <TableHead>
+                                  <button
+                                    type="button"
+                                    className="flex items-center gap-1"
+                                    onClick={() =>
+                                    setDrillSortState((prev) => ({
+                                      key: "canonicalName",
+                                      dir: prev.key === "canonicalName" && prev.dir === "asc" ? "desc" : "asc",
+                                    }))
+                                  }
+                                >
+                                  Supplier
+                                </button>
+                              </TableHead>
+                              <TableHead>
+                                  <button
+                                    type="button"
+                                    className="flex items-center gap-1"
+                                    onClick={() =>
+                                    setDrillSortState((prev) => ({
+                                      key: "risk",
+                                      dir: prev.key === "risk" && prev.dir === "asc" ? "desc" : "asc",
+                                    }))
+                                  }
+                                >
+                                  Risk
+                                </button>
+                              </TableHead>
+                              <TableHead>
+                                  <button
+                                    type="button"
+                                    className="flex items-center gap-1"
+                                    onClick={() =>
+                                    setDrillSortState((prev) => ({
+                                      key: "contractStatus",
+                                      dir: prev.key === "contractStatus" && prev.dir === "asc" ? "desc" : "asc",
+                                    }))
+                                  }
+                                >
+                                  Contract
+                                </button>
+                              </TableHead>
+                              <TableHead className="text-right">
+                                  <button
+                                    type="button"
+                                    className="ml-auto flex items-center gap-1"
+                                    onClick={() =>
+                                    setDrillSortState((prev) => ({
+                                      key: "poInSlice",
+                                      dir: prev.key === "poInSlice" && prev.dir === "asc" ? "desc" : "asc",
+                                    }))
+                                  }
+                                >
+                                  PO (slice)
+                                </button>
+                              </TableHead>
+                              <TableHead className="text-right">
+                                  <button
+                                    type="button"
+                                    className="ml-auto flex items-center gap-1"
+                                    onClick={() =>
+                                    setDrillSortState((prev) => ({
+                                      key: "spendInSlice",
+                                      dir: prev.key === "spendInSlice" && prev.dir === "asc" ? "desc" : "asc",
+                                    }))
+                                  }
+                                >
+                                  Spend (slice)
+                                </button>
+                              </TableHead>
+                              <TableHead className="text-right">
+                                  <button
+                                    type="button"
+                                    className="ml-auto flex items-center gap-1"
+                                    onClick={() =>
+                                    setDrillSortState((prev) => ({
+                                      key: "totalSpend",
+                                      dir: prev.key === "totalSpend" && prev.dir === "asc" ? "desc" : "asc",
+                                    }))
+                                  }
+                                >
+                                  Overall spend
+                                </button>
+                              </TableHead>
+                              <TableHead>
+                                  <button
+                                    type="button"
+                                    className="flex items-center gap-1"
+                                    onClick={() =>
+                                    setDrillSortState((prev) => ({
+                                      key: "categories",
+                                      dir: prev.key === "categories" && prev.dir === "asc" ? "desc" : "asc",
+                                    }))
+                                  }
+                                >
+                                  Category
+                                </button>
+                              </TableHead>
                             </TableRow>
                           </TableHeader>
                           <TableBody>
-                            {drillSuppliersSorted.map((s) => (
+                            {drillRows.map((s) => (
                               <TableRow key={s.code}>
                                 <TableCell>
                                   <div className="font-medium">{s.canonicalName}</div>
@@ -3519,11 +3736,11 @@ export default function SupplierRiskOpsDashboard() {
                       <Table>
                         <TableHeader>
                           <TableRow>
-                            <TableHead className="w-[48px] text-center">
+                            <TableHead className="w-[40px]">
                               <input
                                 type="checkbox"
-                                checked={supplierFiltered.length > 0 && supplierFiltered.every((s) => selectedSupplierCodes.has(s.code))}
-                                onChange={(e) => toggleAllSuppliersInView(e.target.checked)}
+                                checked={supplierFiltered.length > 0 && supplierFiltered.every((s) => selectedSuppliers.has(s.code))}
+                                onChange={toggleSelectAllSuppliers}
                               />
                             </TableHead>
                             <TableHead>Supplier</TableHead>
@@ -3539,10 +3756,10 @@ export default function SupplierRiskOpsDashboard() {
                         <TableBody>
                           {supplierFiltered.map((s) => (
                             <TableRow key={s.code}>
-                              <TableCell className="text-center">
+                              <TableCell>
                                 <input
                                   type="checkbox"
-                                  checked={selectedSupplierCodes.has(s.code)}
+                                  checked={selectedSuppliers.has(s.code)}
                                   onChange={() => toggleSupplierSelection(s.code)}
                                 />
                               </TableCell>
@@ -3890,21 +4107,86 @@ export default function SupplierRiskOpsDashboard() {
                     <CardContent>
                       <div className="max-h-[360px] overflow-auto rounded-2xl border">
                         <Table>
-                        <TableHeader>
-                          <TableRow>
-                            <TableHead className="cursor-pointer" onClick={() => setCategorySortKey("category")}>Category</TableHead>
-                            <TableHead className="cursor-pointer text-right" onClick={() => setCategorySortKey("suppliers")}>Suppliers</TableHead>
-                            <TableHead className="cursor-pointer text-right" onClick={() => setCategorySortKey("highRisk")}>High risk</TableHead>
-                            <TableHead className="cursor-pointer text-right" onClick={() => setCategorySortKey("riskShare")}>Risk share</TableHead>
-                            <TableHead className="cursor-pointer text-right" onClick={() => setCategorySortKey("spend")}>Spend</TableHead>
-                          </TableRow>
-                        </TableHeader>
-                        <TableBody>
-                          {categoryMetricsSorted.map((c) => (
-                            <TableRow key={c.category}>
-                              <TableCell className="min-w-[240px]">{c.category}</TableCell>
-                              <TableCell className="text-right">{c.suppliers}</TableCell>
-                              <TableCell className="text-right">{c.highRiskSuppliers}</TableCell>
+                          <TableHeader>
+                            <TableRow>
+                              <TableHead>
+                                <button
+                                  type="button"
+                                  className="flex items-center gap-1"
+                                  onClick={() =>
+                                    setCategoryTableSort((prev) => ({
+                                      key: "category",
+                                      dir: prev.key === "category" && prev.dir === "asc" ? "desc" : "asc",
+                                    }))
+                                  }
+                                >
+                                  Category
+                                </button>
+                              </TableHead>
+                              <TableHead className="text-right">
+                                <button
+                                  type="button"
+                                  className="ml-auto flex items-center gap-1"
+                                  onClick={() =>
+                                    setCategoryTableSort((prev) => ({
+                                      key: "suppliers",
+                                      dir: prev.key === "suppliers" && prev.dir === "asc" ? "desc" : "asc",
+                                    }))
+                                  }
+                                >
+                                  Suppliers
+                                </button>
+                              </TableHead>
+                              <TableHead className="text-right">
+                                <button
+                                  type="button"
+                                  className="ml-auto flex items-center gap-1"
+                                  onClick={() =>
+                                    setCategoryTableSort((prev) => ({
+                                      key: "highRiskSuppliers",
+                                      dir: prev.key === "highRiskSuppliers" && prev.dir === "asc" ? "desc" : "asc",
+                                    }))
+                                  }
+                                >
+                                  High risk
+                                </button>
+                              </TableHead>
+                              <TableHead className="text-right">
+                                <button
+                                  type="button"
+                                  className="ml-auto flex items-center gap-1"
+                                  onClick={() =>
+                                    setCategoryTableSort((prev) => ({
+                                      key: "riskShare",
+                                      dir: prev.key === "riskShare" && prev.dir === "asc" ? "desc" : "asc",
+                                    }))
+                                  }
+                                >
+                                  Risk share
+                                </button>
+                              </TableHead>
+                              <TableHead className="text-right">
+                                <button
+                                  type="button"
+                                  className="ml-auto flex items-center gap-1"
+                                  onClick={() =>
+                                    setCategoryTableSort((prev) => ({
+                                      key: "totalSpend",
+                                      dir: prev.key === "totalSpend" && prev.dir === "asc" ? "desc" : "asc",
+                                    }))
+                                  }
+                                >
+                                  Spend
+                                </button>
+                              </TableHead>
+                            </TableRow>
+                          </TableHeader>
+                          <TableBody>
+                            {sortedCategoryMetrics.map((c) => (
+                              <TableRow key={c.category}>
+                                <TableCell className="min-w-[240px]">{c.category}</TableCell>
+                                <TableCell className="text-right">{c.suppliers}</TableCell>
+                                <TableCell className="text-right">{c.highRiskSuppliers}</TableCell>
                                 <TableCell className="text-right">{Math.round(c.riskShare * 100)}%</TableCell>
                                 <TableCell className="text-right font-medium">{fmtMoney(c.totalSpend)}</TableCell>
                               </TableRow>
@@ -4230,7 +4512,9 @@ export default function SupplierRiskOpsDashboard() {
                                     <div
                                       key={c.name}
                                       className={`flex items-center justify-between gap-2 rounded-2xl border p-3 ${
-                                        c.name === d.recommended ? "bg-green-50" : "bg-slate-100"
+                                        c.name === d.recommended
+                                          ? "border-green-200 bg-green-50"
+                                          : "border-slate-200 bg-slate-100"
                                       }`}
                                     >
                                       <div>
