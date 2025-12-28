@@ -212,6 +212,165 @@ const DEFAULT_SETTINGS: AppSettings = {
   missingSubfamilySpendThreshold: 250_000,
 };
 
+const DEMO_FACT_ROWS: FactRow[] = [
+  {
+    supplierName: "Alpine Logistics GmbH",
+    supplierCode: "AT-1001",
+    country: "Austria",
+    entity: "Vienna Ops",
+    year: 2024,
+    category: "Logistics - Ground",
+    family: "Transport",
+    subFamily: "Freight",
+    spend: 2_450_000,
+    po: 120,
+    riskFlag: "Yes",
+    status: "Sent",
+    completion: "Done",
+  },
+  {
+    supplierName: "Alpine Logistics GmbH",
+    supplierCode: "AT-1001",
+    country: "Austria",
+    entity: "Vienna Ops",
+    year: 2024,
+    category: "Logistics - Air",
+    family: "Transport",
+    subFamily: "Air Freight",
+    spend: 620_000,
+    po: 18,
+    riskFlag: "Yes",
+    status: "Sent",
+    completion: "Done",
+  },
+  {
+    supplierName: "Helvetia Metals AG",
+    supplierCode: "CH-2007",
+    country: "Switzerland",
+    entity: "Basel Plant",
+    year: 2024,
+    category: "Metals & Mining",
+    family: "Raw Materials",
+    subFamily: "Aluminum",
+    spend: 3_800_000,
+    po: 45,
+    riskFlag: "No",
+    status: "Signed",
+    completion: "Done",
+  },
+  {
+    supplierName: "Nordic Robotics SA",
+    supplierCode: "CH-2015",
+    country: "Switzerland",
+    entity: "Zurich Lab",
+    year: 2024,
+    category: "Automation",
+    family: "Capital Equipment",
+    subFamily: "",
+    spend: 1_250_000,
+    po: 9,
+    riskFlag: "#REF!",
+    status: "Not sent",
+    completion: "Pending",
+  },
+  {
+    supplierName: "Danube Packaging",
+    supplierCode: "AT-1010",
+    country: "Austria",
+    entity: "Linz Plant",
+    year: 2024,
+    category: "Packaging",
+    family: "Manufacturing",
+    subFamily: "Paper",
+    spend: 980_000,
+    po: 80,
+    riskFlag: "No",
+    status: "Review",
+    completion: "In progress",
+  },
+  {
+    supplierName: "Danube Packaging",
+    supplierCode: "AT-1010",
+    country: "Austria",
+    entity: "Linz Plant",
+    year: 2024,
+    category: "Logistics - Ground",
+    family: "Manufacturing",
+    subFamily: "Paper",
+    spend: 240_000,
+    po: 12,
+    riskFlag: "No",
+    status: "Review",
+    completion: "In progress",
+  },
+  {
+    supplierName: "Baltic Energy Co",
+    supplierCode: "DE-3003",
+    country: "Germany",
+    entity: "Munich Hub",
+    year: 2024,
+    category: "Utilities",
+    family: "Energy",
+    subFamily: "Electricity",
+    spend: 4_200_000,
+    po: 14,
+    riskFlag: "Yes",
+    status: "Not compliant",
+    completion: "Done",
+  },
+  {
+    supplierName: "Alpine Logistik GMBH",
+    supplierCode: "AT-1001",
+    country: "Austria",
+    entity: "Graz Ops",
+    year: 2024,
+    category: "Logistics - Ground",
+    family: "Transport",
+    subFamily: "Freight",
+    spend: 310_000,
+    po: 8,
+    riskFlag: "Yes",
+    status: "Sent",
+    completion: "Done",
+  },
+  {
+    supplierName: "Swiss IT Cloud",
+    supplierCode: "CH-2050",
+    country: "Switzerland",
+    entity: "Geneva HQ",
+    year: 2024,
+    category: "IT Services",
+    family: "Technology",
+    subFamily: "Cloud",
+    spend: 1_600_000,
+    po: 28,
+    riskFlag: "No",
+    status: "Signed",
+    completion: "Done",
+  },
+  {
+    supplierName: "Vienna Office Supplies",
+    supplierCode: "AT-1099",
+    country: "Austria",
+    entity: "Vienna HQ",
+    year: 2024,
+    category: "Office Supplies",
+    family: "Indirect",
+    subFamily: "Stationery",
+    spend: 420_000,
+    po: 120,
+    riskFlag: "#REF!",
+    status: "Not sent",
+    completion: "Pending",
+  },
+];
+
+const DEMO_RULES: CategoryRule[] = [
+  { key: "Logistics - Ground", scope: "Category", defaultRisk: "High", comment: "Demo policy" },
+  { key: "Automation", scope: "Category", defaultRisk: "High", comment: "Demo policy" },
+  { key: "Raw Materials", scope: "Family", defaultRisk: "High", comment: "Demo policy" },
+];
+
 type PersistedDB = {
   factRows: FactRow[];
   overrides: Record<string, SupplierOverride>; // by supplier code
@@ -1114,7 +1273,7 @@ export default function SupplierRiskOpsDashboard() {
   const [db, setDB] = useState<PersistedDB>(() => loadDB());
   const [actor, setActor] = useState("Hero");
   const [activeTab, setActiveTab] = useState("overview");
-  const [overviewScope, setOverviewScope] = useState<"Overall" | "Austria" | "Switzerland">("Overall");
+  const [globalCountry, setGlobalCountry] = useState("Overall");
 
   // filters
   const [q, setQ] = useState("");
@@ -1171,23 +1330,23 @@ export default function SupplierRiskOpsDashboard() {
     saveDB(db);
   }, [db]);
 
+  const availableCountries = useMemo(() => {
+    const list = uniq(db.factRows.map((r) => safeStr(r.country)).filter(Boolean)).sort();
+    return ["Overall", ...list];
+  }, [db.factRows]);
+  const scopedFactRows = useMemo(() => {
+    if (globalCountry === "Overall") return db.factRows;
+    return db.factRows.filter((r) => safeStr(r.country) === globalCountry);
+  }, [db.factRows, globalCountry]);
   const suppliers = useMemo(
-    () => buildSupplierMaster(db.factRows, db.overrides, db.categoryRules, db.log, db.settings),
-    [db.factRows, db.overrides, db.categoryRules, db.log, db.settings]
+    () => buildSupplierMaster(scopedFactRows, db.overrides, db.categoryRules, db.log, db.settings),
+    [scopedFactRows, db.overrides, db.categoryRules, db.log, db.settings]
   );
-  const overviewFactRows = useMemo(() => {
-    if (overviewScope === "Overall") return db.factRows;
-    return db.factRows.filter((r) => safeStr(r.country) === overviewScope);
-  }, [db.factRows, overviewScope]);
-  const overviewSuppliers = useMemo(() => {
-    if (overviewScope === "Overall") return suppliers;
-    return suppliers.filter((s) => s.countries.includes(overviewScope));
-  }, [overviewScope, suppliers]);
 
   const duplicates = useMemo(() => buildDuplicates(suppliers), [suppliers]);
   const issues = useMemo(
-    () => buildIssues(db.factRows, suppliers, duplicates, db.settings, db.categoryRules),
-    [db.factRows, suppliers, duplicates, db.settings, db.categoryRules]
+    () => buildIssues(scopedFactRows, suppliers, duplicates, db.settings, db.categoryRules),
+    [scopedFactRows, suppliers, duplicates, db.settings, db.categoryRules]
   );
 
   const issueBuckets = useMemo(() => {
@@ -1209,10 +1368,8 @@ export default function SupplierRiskOpsDashboard() {
       .filter((i) => (issueSeverityFilter === "All" ? true : i.severity === issueSeverityFilter))
       .slice(0, 1000);
   }, [issues, issueTypeFilter, issueSeverityFilter]);
-  const categoryMetrics = useMemo(() => buildCategoryMetrics(db.factRows, suppliers), [db.factRows, suppliers]);
-  const countryMetrics = useMemo(() => buildCountryMetrics(db.factRows, suppliers), [db.factRows, suppliers]);
-  const overviewCategoryMetrics = useMemo(() => buildCategoryMetrics(overviewFactRows, overviewSuppliers), [overviewFactRows, overviewSuppliers]);
-  const overviewCountryMetrics = useMemo(() => buildCountryMetrics(overviewFactRows, overviewSuppliers), [overviewFactRows, overviewSuppliers]);
+  const categoryMetrics = useMemo(() => buildCategoryMetrics(scopedFactRows, suppliers), [scopedFactRows, suppliers]);
+  const countryMetrics = useMemo(() => buildCountryMetrics(scopedFactRows, suppliers), [scopedFactRows, suppliers]);
   const categories = useMemo(() => ["All", ...uniq(categoryMetrics.map((c) => c.category)).sort()], [categoryMetrics]);
 
   useEffect(() => {
@@ -1223,18 +1380,24 @@ export default function SupplierRiskOpsDashboard() {
     setDrillCategory(null);
     setDrillCountry(null);
     setBarInsight(null);
-  }, [overviewScope]);
+  }, [globalCountry]);
 
   useEffect(() => {
     setBulkNameSelected(new Set());
   }, [bulkNameQuery]);
 
+  useEffect(() => {
+    if (!availableCountries.includes(globalCountry)) {
+      setGlobalCountry("Overall");
+    }
+  }, [availableCountries, globalCountry]);
+
   const kpis = useMemo(() => {
-    const total = overviewSuppliers.length;
-    const high = overviewSuppliers.filter((s) => s.risk === "High").length;
-    const signed = overviewSuppliers.filter((s) => s.contractStatus === "Signed").length;
-    const sent = overviewSuppliers.filter((s) => s.contractStatus === "Sent").length;
-    const notEval = overviewSuppliers.filter((s) => !s.evaluated).length;
+    const total = suppliers.length;
+    const high = suppliers.filter((s) => s.risk === "High").length;
+    const signed = suppliers.filter((s) => s.contractStatus === "Signed").length;
+    const sent = suppliers.filter((s) => s.contractStatus === "Sent").length;
+    const notEval = suppliers.filter((s) => !s.evaluated).length;
     const completion = high ? signed / high : 0;
     const dqDup = duplicates.length;
     const unknownInScope = issueBuckets.RISK_UNKNOWN_IN_SCOPE;
@@ -1242,12 +1405,12 @@ export default function SupplierRiskOpsDashboard() {
     const nameMany = issueBuckets.NAME_MANY_CODES;
     const qualityTotal = issues.length;
     return { total, high, signed, sent, notEval, completion, dqDup, unknownInScope, multiCat, nameMany, qualityTotal };
-  }, [overviewSuppliers, duplicates, issueBuckets, issues]);
+  }, [suppliers, duplicates, issueBuckets, issues]);
 
   const funnelData = useMemo(() => {
-    const high = overviewSuppliers.filter((s) => s.risk === "High").length;
-    const signed = overviewSuppliers.filter((s) => s.contractStatus === "Signed").length;
-    const sent = overviewSuppliers.filter((s) => s.contractStatus === "Sent").length;
+    const high = suppliers.filter((s) => s.risk === "High").length;
+    const signed = suppliers.filter((s) => s.contractStatus === "Signed").length;
+    const sent = suppliers.filter((s) => s.contractStatus === "Sent").length;
     const pending = Math.max(high - signed, 0);
     return [
       { stage: "High risk", value: high },
@@ -1255,10 +1418,10 @@ export default function SupplierRiskOpsDashboard() {
       { stage: "Signed", value: signed },
       { stage: "Pending", value: pending },
     ];
-  }, [overviewSuppliers]);
+  }, [suppliers]);
 
   const topRiskyByCount = useMemo(() => {
-    return [...overviewCategoryMetrics]
+    return [...categoryMetrics]
       .filter((c) => c.suppliers >= 10)
       .sort((a, b) =>
         categoryTopSort === "HighRiskDesc"
@@ -1266,10 +1429,10 @@ export default function SupplierRiskOpsDashboard() {
           : b.suppliers - a.suppliers
       )
       .slice(0, 10);
-  }, [overviewCategoryMetrics, categoryTopSort]);
+  }, [categoryMetrics, categoryTopSort]);
 
   const topRiskyBySpend = useMemo(() => {
-    return [...overviewCategoryMetrics]
+    return [...categoryMetrics]
       .filter((c) => Math.abs(c.totalSpend) > 0)
       .sort((a, b) =>
         categorySpendSort === "HighRiskDesc"
@@ -1277,15 +1440,15 @@ export default function SupplierRiskOpsDashboard() {
           : b.totalSpend - a.totalSpend
       )
       .slice(0, 10);
-  }, [overviewCategoryMetrics, categorySpendSort]);
+  }, [categoryMetrics, categorySpendSort]);
 
   const topCountriesByCount = useMemo(() => {
-    return [...overviewCountryMetrics].sort((a, b) => b.suppliers - a.suppliers).slice(0, 10);
-  }, [overviewCountryMetrics]);
+    return [...countryMetrics].sort((a, b) => b.suppliers - a.suppliers).slice(0, 10);
+  }, [countryMetrics]);
 
   const topCountriesBySpend = useMemo(() => {
-    return [...overviewCountryMetrics].sort((a, b) => b.totalSpend - a.totalSpend).slice(0, 10);
-  }, [overviewCountryMetrics]);
+    return [...countryMetrics].sort((a, b) => b.totalSpend - a.totalSpend).slice(0, 10);
+  }, [countryMetrics]);
 
   const riskMix = useMemo(() => {
     const buckets: Record<RiskLevel, { suppliers: number; spend: number }> = {
@@ -1293,7 +1456,7 @@ export default function SupplierRiskOpsDashboard() {
       "Non-risk": { suppliers: 0, spend: 0 },
       Unknown: { suppliers: 0, spend: 0 },
     };
-    for (const s of overviewSuppliers) {
+    for (const s of suppliers) {
       buckets[s.risk].suppliers += 1;
       buckets[s.risk].spend += s.totalSpend;
     }
@@ -1302,7 +1465,7 @@ export default function SupplierRiskOpsDashboard() {
       suppliers: buckets[r].suppliers,
       spend: buckets[r].spend,
     }));
-  }, [overviewSuppliers]);
+  }, [suppliers]);
   const supplierByCode = useMemo(() => {
     const m = new Map<string, SupplierMaster>();
     for (const s of suppliers) m.set(s.code, s);
@@ -1364,7 +1527,7 @@ export default function SupplierRiskOpsDashboard() {
   const drillSuppliers = useMemo(() => {
     if (!drillCategory) return [] as any[];
     const by: Record<string, { spend: number; po: number }> = {};
-    for (const r of overviewFactRows) {
+    for (const r of scopedFactRows) {
       if (safeStr(r.category) !== drillCategory) continue;
       const code = normCode(r.supplierCode);
       if (!code) continue;
@@ -1390,12 +1553,12 @@ export default function SupplierRiskOpsDashboard() {
       })
       .sort((a: any, b: any) => b.spendInSlice - a.spendInSlice)
       .slice(0, 500);
-  }, [drillCategory, overviewFactRows, supplierByCode]);
+  }, [drillCategory, scopedFactRows, supplierByCode]);
 
   const drillSuppliersByCountry = useMemo(() => {
     if (!drillCountry) return [] as any[];
     const by: Record<string, { spend: number; po: number }> = {};
-    for (const r of overviewFactRows) {
+    for (const r of scopedFactRows) {
       const c = safeStr(r.country) || "(unknown)";
       if (c !== drillCountry) continue;
       const code = normCode(r.supplierCode);
@@ -1422,7 +1585,7 @@ export default function SupplierRiskOpsDashboard() {
       })
       .sort((a: any, b: any) => b.spendInSlice - a.spendInSlice)
       .slice(0, 500);
-  }, [drillCountry, overviewFactRows, supplierByCode]);
+  }, [drillCountry, scopedFactRows, supplierByCode]);
 
   const supplierFiltered = useMemo(() => {
     const needle = q.trim().toLowerCase();
@@ -1641,6 +1804,27 @@ export default function SupplierRiskOpsDashboard() {
   function resetAll() {
     setDB({ factRows: [], overrides: {}, categoryRules: [], settings: DEFAULT_SETTINGS, tasks: [], log: [], lastUndo: null });
     pushLog({ type: "RESET", summary: "Reset dashboard database", details: {} });
+    setActiveTab("overview");
+  }
+
+  function loadDemoData() {
+    const entry: LogEntry = {
+      id: uuid(),
+      ts: nowIso(),
+      actor,
+      type: "IMPORT",
+      summary: `Loaded demo dataset (${DEMO_FACT_ROWS.length} rows)`,
+      details: { rows: DEMO_FACT_ROWS.length, countries: uniq(DEMO_FACT_ROWS.map((r) => r.country)).filter(Boolean) },
+    };
+    setDB({
+      factRows: DEMO_FACT_ROWS,
+      overrides: {},
+      categoryRules: DEMO_RULES,
+      settings: DEFAULT_SETTINGS,
+      tasks: [],
+      log: [entry],
+      lastUndo: null,
+    });
     setActiveTab("overview");
   }
 
@@ -2262,6 +2446,21 @@ export default function SupplierRiskOpsDashboard() {
               <span className="text-xs text-muted-foreground">Actor</span>
               <Input value={actor} onChange={(e) => setActor(e.target.value)} className="h-9 w-[160px]" />
             </div>
+            <div className="hidden items-center gap-2 md:flex">
+              <span className="text-xs text-muted-foreground">Country</span>
+              <Select value={globalCountry} onValueChange={(v: any) => setGlobalCountry(v)}>
+                <SelectTrigger className="h-9 w-[180px]">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {availableCountries.map((country) => (
+                    <SelectItem key={country} value={country}>
+                      {country}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
 
             <input
               ref={fileInputRef}
@@ -2282,6 +2481,9 @@ export default function SupplierRiskOpsDashboard() {
 
             <Button variant="secondary" className="gap-2" onClick={() => fileInputRef.current?.click()}>
               <Upload className="h-4 w-4" /> Import XLSX/JSON
+            </Button>
+            <Button variant="outline" className="gap-2" onClick={loadDemoData}>
+              <Database className="h-4 w-4" /> Load demo data
             </Button>
             <Button variant="outline" className="gap-2" onClick={exportDB}>
               <Download className="h-4 w-4" /> Export DB
@@ -2350,20 +2552,6 @@ export default function SupplierRiskOpsDashboard() {
               <EmptyState title="No data loaded" subtitle="Import your XLSX tracker (recommended) or a DB snapshot (JSON)." />
             ) : (
               <>
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <div className="text-sm text-muted-foreground">Overview scope</div>
-                  <div className="flex flex-wrap gap-2">
-                    {(["Overall", "Austria", "Switzerland"] as const).map((scope) => (
-                      <Button
-                        key={scope}
-                        variant={overviewScope === scope ? "secondary" : "outline"}
-                        onClick={() => setOverviewScope(scope)}
-                      >
-                        {scope}
-                      </Button>
-                    ))}
-                  </div>
-                </div>
                 <div className="grid gap-3 md:grid-cols-6">
                   <Card className="md:col-span-2">
                     <CardHeader className="pb-2">
@@ -2449,7 +2637,7 @@ export default function SupplierRiskOpsDashboard() {
                                 label: d?.payload?.stage ?? "Unknown",
                                 details: [
                                   `Value: ${d?.payload?.value ?? 0}`,
-                                  `Scope: ${overviewScope}`,
+                                  `Scope: ${globalCountry}`,
                                   "Source: Supplier Master derived from imported fact rows.",
                                 ],
                               })
@@ -2563,7 +2751,7 @@ export default function SupplierRiskOpsDashboard() {
                                 details: [
                                   `High risk suppliers: ${d?.payload?.highRiskSuppliers ?? 0}`,
                                   `Total suppliers: ${d?.payload?.suppliers ?? 0}`,
-                                  `Scope: ${overviewScope}`,
+                                  `Scope: ${globalCountry}`,
                                 ],
                               });
                             }}
@@ -2581,7 +2769,7 @@ export default function SupplierRiskOpsDashboard() {
                                 details: [
                                   `Total suppliers: ${d?.payload?.suppliers ?? 0}`,
                                   `High risk suppliers: ${d?.payload?.highRiskSuppliers ?? 0}`,
-                                  `Scope: ${overviewScope}`,
+                                  `Scope: ${globalCountry}`,
                                 ],
                               });
                             }}
@@ -2631,7 +2819,7 @@ export default function SupplierRiskOpsDashboard() {
                                 details: [
                                   `High risk spend: ${fmtMoney(Number(d?.payload?.highRiskSpend ?? 0))}`,
                                   `Total spend: ${fmtMoney(Number(d?.payload?.totalSpend ?? 0))}`,
-                                  `Scope: ${overviewScope}`,
+                                  `Scope: ${globalCountry}`,
                                 ],
                               });
                             }}
@@ -2649,7 +2837,7 @@ export default function SupplierRiskOpsDashboard() {
                                 details: [
                                   `Total spend: ${fmtMoney(Number(d?.payload?.totalSpend ?? 0))}`,
                                   `High risk spend: ${fmtMoney(Number(d?.payload?.highRiskSpend ?? 0))}`,
-                                  `Scope: ${overviewScope}`,
+                                  `Scope: ${globalCountry}`,
                                 ],
                               });
                             }}
@@ -2690,7 +2878,7 @@ export default function SupplierRiskOpsDashboard() {
                                 details: [
                                   `High risk suppliers: ${d?.payload?.highRiskSuppliers ?? 0}`,
                                   `Total suppliers: ${d?.payload?.suppliers ?? 0}`,
-                                  `Scope: ${overviewScope}`,
+                                  `Scope: ${globalCountry}`,
                                 ],
                               });
                             }}
@@ -2708,7 +2896,7 @@ export default function SupplierRiskOpsDashboard() {
                                 details: [
                                   `Total suppliers: ${d?.payload?.suppliers ?? 0}`,
                                   `High risk suppliers: ${d?.payload?.highRiskSuppliers ?? 0}`,
-                                  `Scope: ${overviewScope}`,
+                                  `Scope: ${globalCountry}`,
                                 ],
                               });
                             }}
@@ -2741,7 +2929,7 @@ export default function SupplierRiskOpsDashboard() {
                                 details: [
                                   `Suppliers: ${d?.payload?.suppliers ?? 0}`,
                                   `Spend: ${fmtMoney(Number(d?.payload?.spend ?? 0))}`,
-                                  `Scope: ${overviewScope}`,
+                                  `Scope: ${globalCountry}`,
                                 ],
                               })
                             }
@@ -2757,7 +2945,7 @@ export default function SupplierRiskOpsDashboard() {
                                 details: [
                                   `Spend: ${fmtMoney(Number(d?.payload?.spend ?? 0))}`,
                                   `Suppliers: ${d?.payload?.suppliers ?? 0}`,
-                                  `Scope: ${overviewScope}`,
+                                  `Scope: ${globalCountry}`,
                                 ],
                               })
                             }
@@ -2798,7 +2986,7 @@ export default function SupplierRiskOpsDashboard() {
                                 details: [
                                   `High risk spend: ${fmtMoney(Number(d?.payload?.highRiskSpend ?? 0))}`,
                                   `Total spend: ${fmtMoney(Number(d?.payload?.totalSpend ?? 0))}`,
-                                  `Scope: ${overviewScope}`,
+                                  `Scope: ${globalCountry}`,
                                 ],
                               });
                             }}
@@ -2816,7 +3004,7 @@ export default function SupplierRiskOpsDashboard() {
                                 details: [
                                   `Total spend: ${fmtMoney(Number(d?.payload?.totalSpend ?? 0))}`,
                                   `High risk spend: ${fmtMoney(Number(d?.payload?.highRiskSpend ?? 0))}`,
-                                  `Scope: ${overviewScope}`,
+                                  `Scope: ${globalCountry}`,
                                 ],
                               });
                             }}
@@ -2856,7 +3044,7 @@ export default function SupplierRiskOpsDashboard() {
                                 details: [
                                   `High risk share: ${Math.round(Number(d?.payload?.riskShare ?? 0) * 100)}%`,
                                   `Suppliers: ${d?.payload?.suppliers ?? 0}`,
-                                  `Scope: ${overviewScope}`,
+                                  `Scope: ${globalCountry}`,
                                 ],
                               });
                             }}
