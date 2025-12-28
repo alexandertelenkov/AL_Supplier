@@ -10,6 +10,7 @@ import {
   Database,
   Download,
   FileUp,
+  Palette,
   RefreshCw,
   Search,
   Settings,
@@ -43,6 +44,7 @@ import {
 import {
   BarChart,
   Bar,
+  Cell,
   XAxis,
   YAxis,
   Tooltip,
@@ -106,6 +108,10 @@ type AppSettings = {
   scopeSpendThreshold: number;
   /** Data-quality: flag suppliers with missing subFamily when abs spend exceeds this */
   missingSubfamilySpendThreshold: number;
+  /** UI palette for country charts */
+  countryPalette: Record<string, string>;
+  /** Fill style for country bars */
+  countryBarFillStyle: "solid" | "diagonal" | "dots";
 };
 
 type UndoBatch = {
@@ -210,6 +216,8 @@ const DEFAULT_SETTINGS: AppSettings = {
   multiCategorySecondShareThreshold: 0.12,
   scopeSpendThreshold: 1_000_000,
   missingSubfamilySpendThreshold: 250_000,
+  countryPalette: {},
+  countryBarFillStyle: "solid",
 };
 
 const DEMO_FACT_ROWS: FactRow[] = [
@@ -1225,6 +1233,10 @@ function shortLabel(label: string, max = 22) {
   return `${label.slice(0, max - 1)}…`;
 }
 
+function slugifyKey(value: string) {
+  return safeStr(value).toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9-_]/g, "");
+}
+
 // -----------------------------
 // UI components
 // -----------------------------
@@ -1336,7 +1348,7 @@ export default function SupplierRiskOpsDashboard() {
   const [categoryTopSort, setCategoryTopSort] = useState<"HighRiskDesc" | "TotalDesc">("HighRiskDesc");
   const [categorySpendSort, setCategorySpendSort] = useState<"HighRiskDesc" | "TotalDesc">("HighRiskDesc");
   const [drillSortState, setDrillSortState] = useState<{ key: string; dir: "asc" | "desc" }>({ key: "spendInSlice", dir: "desc" });
-  const [categoryTableSort, setCategoryTableSort] = useState<{ key: string; dir: "asc" | "desc" }>({ key: "highRiskSuppliers", dir: "desc" });
+  const [categoryTableSortState, setCategoryTableSortState] = useState<{ key: string; dir: "asc" | "desc" }>({ key: "highRiskSuppliers", dir: "desc" });
   const [barInsight, setBarInsight] = useState<{ title: string; label: string; details: string[] } | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -1385,6 +1397,7 @@ export default function SupplierRiskOpsDashboard() {
   }, [issues, issueTypeFilter, issueSeverityFilter]);
   const categoryMetrics = useMemo(() => buildCategoryMetrics(scopedFactRows, suppliers), [scopedFactRows, suppliers]);
   const countryMetrics = useMemo(() => buildCountryMetrics(scopedFactRows, suppliers), [scopedFactRows, suppliers]);
+  const countryPalette = db.settings.countryPalette ?? {};
   const categories = useMemo(() => ["All", ...uniq(categoryMetrics.map((c) => c.category)).sort()], [categoryMetrics]);
 
   const categoryMetricsSorted = useMemo(() => {
@@ -1541,8 +1554,14 @@ export default function SupplierRiskOpsDashboard() {
   }, [overviewCountryMetrics]);
 
   const topCountriesBySpend = useMemo(() => {
-    return [...overviewCountryMetrics].sort((a, b) => b.totalSpend - a.totalSpend);
-  }, [overviewCountryMetrics]);
+    return [...countryMetrics].sort((a, b) => b.totalSpend - a.totalSpend).slice(0, 10);
+  }, [countryMetrics]);
+  const topCountriesByRiskShare = useMemo(() => {
+    return [...countryMetrics]
+      .filter((c) => c.suppliers >= 10)
+      .sort((a, b) => b.riskShare - a.riskShare)
+      .slice(0, 10);
+  }, [countryMetrics]);
 
   const riskMix = useMemo(() => {
     const buckets: Record<RiskLevel, { suppliers: number; spend: number }> = {
@@ -1613,14 +1632,14 @@ export default function SupplierRiskOpsDashboard() {
 
   const sortedCategoryMetrics = useMemo(() => {
     const sorted = [...categoryMetrics];
-    const dir = categoryTableSort.dir === "asc" ? 1 : -1;
+    const dir = categoryTableSortState.dir === "asc" ? 1 : -1;
     sorted.sort((a, b) => {
-      const key = categoryTableSort.key;
+      const key = categoryTableSortState.key;
       if (key === "category") return a.category.localeCompare(b.category) * dir;
       return (Number((a as any)[key] ?? 0) - Number((b as any)[key] ?? 0)) * dir;
     });
     return sorted;
-  }, [categoryMetrics, categoryTableSort]);
+  }, [categoryMetrics, categoryTableSortState]);
 
   const drillSuppliers = useMemo(() => {
     if (!drillCategory) return [] as any[];
@@ -1882,6 +1901,38 @@ export default function SupplierRiskOpsDashboard() {
     });
     return sorted;
   }, [drillCategory, drillSuppliers, drillSuppliersByCountry, drillSort]);
+
+  function jumpToSupplier(code: string) {
+    setQ(code);
+    setActiveTab("suppliers");
+  }
+
+  const worklistSorted = useMemo(() => {
+    const sorted = [...worklist];
+    const dir = fastQueueSort.includes("Asc") ? 1 : -1;
+    if (fastQueueSort.startsWith("Spend")) {
+      sorted.sort((a, b) => (a.totalSpend - b.totalSpend) * dir);
+    } else {
+      sorted.sort((a, b) => a.canonicalName.localeCompare(b.canonicalName) * dir);
+    }
+    return sorted;
+  }, [worklist, fastQueueSort]);
+
+  const drillRows = useMemo(() => {
+    const rows = (drillCategory ? drillSuppliers : drillSuppliersByCountry) as any[];
+    const sorted = [...rows];
+    const dir = drillSortState.dir === "asc" ? 1 : -1;
+    const orderRisk: Record<RiskLevel, number> = { High: 3, "Non-risk": 2, Unknown: 1 };
+    sorted.sort((a, b) => {
+      const key = drillSortState.key;
+      if (key === "risk") return (orderRisk[a.risk] - orderRisk[b.risk]) * dir;
+      if (key === "contractStatus") return String(a.contractStatus).localeCompare(String(b.contractStatus)) * dir;
+      if (key === "canonicalName") return String(a.canonicalName).localeCompare(String(b.canonicalName)) * dir;
+      if (key === "categories") return String(a.categories?.[0] ?? "").localeCompare(String(b.categories?.[0] ?? "")) * dir;
+      return (Number(a[key] ?? 0) - Number(b[key] ?? 0)) * dir;
+    });
+    return sorted;
+  }, [drillCategory, drillSuppliers, drillSuppliersByCountry, drillSortState]);
 
   function jumpToSupplier(code: string) {
     setQ(code);
@@ -2592,6 +2643,61 @@ export default function SupplierRiskOpsDashboard() {
     pushLog({ type: "SETTINGS", summary: "Updated guardrail thresholds", details: patch });
   }
 
+  function updateCountryPalette(country: string, color: string) {
+    const key = safeStr(country);
+    if (!key) return;
+    const next = { ...(db.settings.countryPalette ?? {}) };
+    if (!color) delete next[key];
+    else next[key] = color;
+    setAppSettings({ countryPalette: next });
+  }
+
+  function clearCountryPalette(country: string) {
+    const key = safeStr(country);
+    if (!key) return;
+    const next = { ...(db.settings.countryPalette ?? {}) };
+    delete next[key];
+    setAppSettings({ countryPalette: next });
+  }
+
+  function getCountryColor(country: string, fallback: string) {
+    return countryPalette[country] || fallback;
+  }
+
+  function getCountryFill(country: string, fallback: string) {
+    const color = getCountryColor(country, fallback);
+    if (db.settings.countryBarFillStyle === "solid") return color;
+    return `url(#country-${slugifyKey(country)}-${db.settings.countryBarFillStyle})`;
+  }
+
+  function renderCountryBarDefs(countries: string[], fallback: string) {
+    const style = db.settings.countryBarFillStyle;
+    if (style === "solid") return null;
+    const unique = uniq(countries);
+    return (
+      <defs>
+        {unique.map((country) => {
+          const color = getCountryColor(country, fallback);
+          const id = `country-${slugifyKey(country)}-${style}`;
+          if (style === "dots") {
+            return (
+              <pattern key={id} id={id} width="6" height="6" patternUnits="userSpaceOnUse">
+                <rect width="6" height="6" fill="transparent" />
+                <circle cx="2" cy="2" r="1.3" fill={color} />
+              </pattern>
+            );
+          }
+          return (
+            <pattern key={id} id={id} width="8" height="8" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
+              <rect width="8" height="8" fill="transparent" />
+              <line x1="0" y1="0" x2="0" y2="8" stroke={color} strokeWidth="2" />
+            </pattern>
+          );
+        })}
+      </defs>
+    );
+  }
+
   function addRule() {
     const key = safeStr(newRuleKey);
     if (!key) return;
@@ -2734,6 +2840,67 @@ export default function SupplierRiskOpsDashboard() {
                 </SelectContent>
               </Select>
             </div>
+            <Dialog>
+              <DialogTrigger asChild>
+                <Button variant="outline" className="gap-2">
+                  <Palette className="h-4 w-4" /> Palette
+                </Button>
+              </DialogTrigger>
+              <DialogContent className="max-w-3xl">
+                <DialogHeader>
+                  <DialogTitle>Country palette & bar styling</DialogTitle>
+                </DialogHeader>
+                <div className="text-sm text-muted-foreground">
+                  Customize colors for country charts and choose a bar fill style. Settings are stored in the exported JSON snapshot.
+                </div>
+                <div className="mt-4 grid gap-3 md:grid-cols-3">
+                  <div className="rounded-2xl border p-3">
+                    <div className="text-xs text-muted-foreground">Bar fill style</div>
+                    <Select
+                      value={db.settings.countryBarFillStyle}
+                      onValueChange={(v: any) => setAppSettings({ countryBarFillStyle: v })}
+                    >
+                      <SelectTrigger className="mt-2">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="solid">Solid</SelectItem>
+                        <SelectItem value="diagonal">Diagonal stripes</SelectItem>
+                        <SelectItem value="dots">Dots</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="rounded-2xl border p-3 md:col-span-2">
+                    <div className="text-xs text-muted-foreground">Country colors</div>
+                    <div className="mt-2 space-y-2">
+                      {availableCountries.filter((c) => c !== "Overall").map((country) => (
+                        <div key={country} className="flex items-center justify-between gap-2 rounded-xl border p-2">
+                          <div className="text-sm font-medium">{country}</div>
+                          <div className="flex items-center gap-2">
+                            <input
+                              type="color"
+                              value={getCountryColor(country, "#60a5fa")}
+                              onChange={(e) => updateCountryPalette(country, e.target.value)}
+                            />
+                            <Input
+                              value={getCountryColor(country, "#60a5fa")}
+                              onChange={(e) => updateCountryPalette(country, e.target.value)}
+                              className="h-8 w-[110px]"
+                            />
+                            <Button variant="ghost" size="sm" onClick={() => clearCountryPalette(country)}>
+                              Reset
+                            </Button>
+                          </div>
+                        </div>
+                      ))}
+                      {availableCountries.length <= 1 ? (
+                        <div className="text-xs text-muted-foreground">No countries available yet. Import data first.</div>
+                      ) : null}
+                    </div>
+                  </div>
+                </div>
+              </DialogContent>
+            </Dialog>
 
             <input
               ref={fileInputRef}
@@ -3154,6 +3321,7 @@ export default function SupplierRiskOpsDashboard() {
                           data={topCountriesByCount}
                           margin={{ left: 10, right: 10 }}
                         >
+                          {renderCountryBarDefs(topCountriesByCount.map((c) => c.country), "#93c5fd")}
                           <CartesianGrid strokeDasharray="3 3" />
                           <XAxis dataKey="country" />
                           <YAxis />
@@ -3162,7 +3330,6 @@ export default function SupplierRiskOpsDashboard() {
                           <Bar
                             dataKey="highRiskSuppliers"
                             name="High risk"
-                            fill="#fca5a5"
                             onClick={(d: any) => {
                               const country = d?.payload?.country ?? null;
                               setDrillCountry(country);
@@ -3176,11 +3343,14 @@ export default function SupplierRiskOpsDashboard() {
                                 ],
                               });
                             }}
-                          />
+                          >
+                            {topCountriesByCount.map((entry) => (
+                              <Cell key={`risk-${entry.country}`} fill={getCountryFill(entry.country, "#fca5a5")} />
+                            ))}
+                          </Bar>
                           <Bar
                             dataKey="suppliers"
                             name="Total"
-                            fill="#e5e7eb"
                             onClick={(d: any) => {
                               const country = d?.payload?.country ?? null;
                               setDrillCountry(country);
@@ -3194,7 +3364,11 @@ export default function SupplierRiskOpsDashboard() {
                                 ],
                               });
                             }}
-                          />
+                          >
+                            {topCountriesByCount.map((entry) => (
+                              <Cell key={`total-${entry.country}`} fill={getCountryFill(entry.country, "#93c5fd")} fillOpacity={0.4} />
+                            ))}
+                          </Bar>
                         </BarChart>
                       </ResponsiveContainer>
                     </CardContent>
@@ -3262,6 +3436,7 @@ export default function SupplierRiskOpsDashboard() {
                           data={topCountriesBySpend}
                           margin={{ left: 10, right: 10 }}
                         >
+                          {renderCountryBarDefs(topCountriesBySpend.map((c) => c.country), "#93c5fd")}
                           <CartesianGrid strokeDasharray="3 3" />
                           <XAxis dataKey="country" />
                           <YAxis tickFormatter={(v: any) => fmtMoney(Number(v))} />
@@ -3270,7 +3445,6 @@ export default function SupplierRiskOpsDashboard() {
                           <Bar
                             dataKey="highRiskSpend"
                             name="High risk spend"
-                            fill="#fca5a5"
                             onClick={(d: any) => {
                               const country = d?.payload?.country ?? null;
                               setDrillCountry(country);
@@ -3284,11 +3458,14 @@ export default function SupplierRiskOpsDashboard() {
                                 ],
                               });
                             }}
-                          />
+                          >
+                            {topCountriesBySpend.map((entry) => (
+                              <Cell key={`risk-${entry.country}`} fill={getCountryFill(entry.country, "#fca5a5")} />
+                            ))}
+                          </Bar>
                           <Bar
                             dataKey="totalSpend"
                             name="Total spend"
-                            fill="#93c5fd"
                             onClick={(d: any) => {
                               const country = d?.payload?.country ?? null;
                               setDrillCountry(country);
@@ -3302,7 +3479,11 @@ export default function SupplierRiskOpsDashboard() {
                                 ],
                               });
                             }}
-                          />
+                          >
+                            {topCountriesBySpend.map((entry) => (
+                              <Cell key={`total-${entry.country}`} fill={getCountryFill(entry.country, "#93c5fd")} fillOpacity={0.4} />
+                            ))}
+                          </Bar>
                         </BarChart>
                       </ResponsiveContainer>
                     </CardContent>
@@ -3315,12 +3496,10 @@ export default function SupplierRiskOpsDashboard() {
                     <CardContent className="h-[320px]">
                       <ResponsiveContainer width="100%" height="100%">
                         <BarChart
-                          data={[...overviewCountryMetrics]
-                            .filter((c) => c.suppliers >= 10)
-                            .sort((a, b) => b.riskShare - a.riskShare)
-                            .slice(0, 10)}
+                          data={topCountriesByRiskShare}
                           margin={{ left: 10, right: 10 }}
                         >
+                          {renderCountryBarDefs(topCountriesByRiskShare.map((c) => c.country), "#fca5a5")}
                           <CartesianGrid strokeDasharray="3 3" />
                           <XAxis dataKey="country" />
                           <YAxis tickFormatter={(v: any) => `${Math.round(Number(v) * 100)}%`} />
@@ -3328,7 +3507,6 @@ export default function SupplierRiskOpsDashboard() {
                           <Bar
                             dataKey="riskShare"
                             name="High risk share"
-                            fill="#fca5a5"
                             onClick={(d: any) => {
                               const country = d?.payload?.country ?? null;
                               setDrillCountry(country);
@@ -3342,7 +3520,11 @@ export default function SupplierRiskOpsDashboard() {
                                 ],
                               });
                             }}
-                          />
+                          >
+                            {topCountriesByRiskShare.map((entry) => (
+                              <Cell key={`share-${entry.country}`} fill={getCountryFill(entry.country, "#fca5a5")} />
+                            ))}
+                          </Bar>
                         </BarChart>
                       </ResponsiveContainer>
                     </CardContent>
@@ -4114,7 +4296,7 @@ export default function SupplierRiskOpsDashboard() {
                                   type="button"
                                   className="flex items-center gap-1"
                                   onClick={() =>
-                                    setCategoryTableSort((prev) => ({
+                                    setCategoryTableSortState((prev) => ({
                                       key: "category",
                                       dir: prev.key === "category" && prev.dir === "asc" ? "desc" : "asc",
                                     }))
@@ -4128,7 +4310,7 @@ export default function SupplierRiskOpsDashboard() {
                                   type="button"
                                   className="ml-auto flex items-center gap-1"
                                   onClick={() =>
-                                    setCategoryTableSort((prev) => ({
+                                    setCategoryTableSortState((prev) => ({
                                       key: "suppliers",
                                       dir: prev.key === "suppliers" && prev.dir === "asc" ? "desc" : "asc",
                                     }))
@@ -4142,7 +4324,7 @@ export default function SupplierRiskOpsDashboard() {
                                   type="button"
                                   className="ml-auto flex items-center gap-1"
                                   onClick={() =>
-                                    setCategoryTableSort((prev) => ({
+                                    setCategoryTableSortState((prev) => ({
                                       key: "highRiskSuppliers",
                                       dir: prev.key === "highRiskSuppliers" && prev.dir === "asc" ? "desc" : "asc",
                                     }))
@@ -4156,7 +4338,7 @@ export default function SupplierRiskOpsDashboard() {
                                   type="button"
                                   className="ml-auto flex items-center gap-1"
                                   onClick={() =>
-                                    setCategoryTableSort((prev) => ({
+                                    setCategoryTableSortState((prev) => ({
                                       key: "riskShare",
                                       dir: prev.key === "riskShare" && prev.dir === "asc" ? "desc" : "asc",
                                     }))
@@ -4170,7 +4352,7 @@ export default function SupplierRiskOpsDashboard() {
                                   type="button"
                                   className="ml-auto flex items-center gap-1"
                                   onClick={() =>
-                                    setCategoryTableSort((prev) => ({
+                                    setCategoryTableSortState((prev) => ({
                                       key: "totalSpend",
                                       dir: prev.key === "totalSpend" && prev.dir === "asc" ? "desc" : "asc",
                                     }))
