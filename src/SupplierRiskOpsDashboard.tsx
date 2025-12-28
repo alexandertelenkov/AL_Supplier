@@ -279,12 +279,11 @@ const DEFAULT_SETTINGS: AppSettings = {
   },
   bulkContactName: "",
   bulkContactEmail: "",
-  // ДОБАВИТЬ:
   statusPalette: {
     risk: DEFAULT_RISK_PALETTE,
     contract: DEFAULT_CONTRACT_PALETTE,
   },
-  supplierContacts: {}, // ДОБАВИТЬ
+  supplierContacts: {}, // ← ДОБАВИТЬ ЭТУ СТРОКУ
 };
 
 const RISK_LEVELS: RiskLevel[] = ["High", "Non-risk", "Unknown"];
@@ -3111,11 +3110,12 @@ export default function SupplierRiskOpsDashboard() {
 
   const pctOfTotal = (value: number) => (overviewKpis.total ? Math.round((value / overviewKpis.total) * 100) : 0);
   const getFunnelColor = (stage: string) => {
-    if (stage === "High risk") return getRiskColor("High", barPalette.funnel);
-    if (stage === "Sent") return getContractColor("Sent", barPalette.funnel);
-    if (stage === "Signed") return getContractColor("Signed", barPalette.funnel);
-    if (stage === "Pending") return barPalette.funnelPending;
-    return barPalette.funnel;
+  if (stage === "High risk") return getBarColor("riskLevel", "High", DEFAULT_RISK_PALETTE.High);
+  if (stage === "Sent") return getBarColor("contractStatus", "Sent", DEFAULT_CONTRACT_PALETTE.Sent);
+  if (stage === "Signed") return getBarColor("contractStatus", "Signed", DEFAULT_CONTRACT_PALETTE.Signed);
+  if (stage === "Pending") return getBarColor("funnelStage", "Pending", "#93c5fd");
+  return getBarColor("funnelStage", stage, "#93c5fd");
+};
   };
 
   // -----------------------------
@@ -3476,35 +3476,6 @@ export default function SupplierRiskOpsDashboard() {
                             ))}
                           </div>
                         </div>
-
-                        <div className="rounded-2xl border p-3">
-                          <div className="text-xs text-muted-foreground">Contract status palette</div>
-                          <div className="mt-2 space-y-2">
-                            {CONTRACT_STATUS_OPTIONS.map((status) => (
-                              <div key={status} className="flex items-center justify-between gap-2 rounded-xl border p-2">
-                                <div className="text-sm font-medium">{status}</div>
-                                <div className="flex items-center gap-2">
-                                  <input
-                                    type="color"
-                                    value={getBarColor("contractStatus", status, DEFAULT_CONTRACT_PALETTE[status])}
-                                    onChange={(e) => updateBarPalette("contractStatus", status, e.target.value)}
-                                  />
-                                  <Input
-                                    value={getBarColor("contractStatus", status, DEFAULT_CONTRACT_PALETTE[status])}
-                                    onChange={(e) => updateBarPalette("contractStatus", status, e.target.value)}
-                                    className="h-8 w-[110px]"
-                                  />
-                                  <Button variant="outline" size="sm" onClick={() => clearBarPalette("contractStatus", status)}>
-                                    Reset
-                                  </Button>
-                                </div>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      </div>
-                    </DialogContent>
-                  </Dialog>
                 </div>
 
                 <div className="grid gap-3 md:grid-cols-6">
