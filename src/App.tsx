@@ -1,6 +1,116 @@
 import React, { useState } from "react";
-import { ArrowRight, BarChart3, BookOpen, LayoutDashboard } from "lucide-react";
+import { motion } from "framer-motion";
+import { BarChart3, BookOpen, ChevronRight, LayoutDashboard } from "lucide-react";
 import SupplierRiskOpsDashboard from "./SupplierRiskOpsDashboard";
+
+const LandingCard = ({ title, subtitle, icon: Icon, colorClass, onClick, index }: any) => {
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 20 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ delay: index * 0.1 }}
+      onClick={onClick}
+      className="group relative cursor-pointer overflow-hidden rounded-3xl border border-slate-100 bg-white p-8 shadow-xl transition-all hover:-translate-y-1 hover:shadow-2xl"
+    >
+      <div className={`absolute -right-6 -top-6 h-32 w-32 rounded-full opacity-10 transition-transform group-hover:scale-150 ${colorClass}`} />
+
+      <div className="relative z-10">
+        <div className={`mb-6 flex h-14 w-14 items-center justify-center rounded-2xl ${colorClass} text-white shadow-lg`}>
+          <Icon className="h-7 w-7" />
+        </div>
+
+        <h3 className="mb-3 text-2xl font-bold text-slate-900">{title}</h3>
+        <p className="leading-relaxed text-slate-500">{subtitle}</p>
+
+        <div className="mt-8 flex items-center text-sm font-bold uppercase tracking-wider text-slate-400 transition-colors group-hover:text-slate-900">
+          <span>Open Module</span>
+          <ChevronRight className="ml-2 h-4 w-4" />
+        </div>
+      </div>
+    </motion.div>
+  );
+};
+
+function LandingPage({ onNavigate }: { onNavigate: (view: "dashboard" | "analytics" | "docs") => void }) {
+  return (
+    <div className="min-h-screen bg-[#f4f6f8] font-sans text-slate-900 selection:bg-[#0f766e] selection:text-white">
+      <div className="pointer-events-none fixed inset-0 z-0 overflow-hidden">
+        <div className="absolute left-[-10%] top-[-20%] h-[50%] w-[50%] rounded-full bg-[#0f766e]/5 blur-[120px]" />
+        <div className="absolute bottom-[-10%] right-[-5%] h-[40%] w-[40%] rounded-full bg-amber-500/5 blur-[100px]" />
+      </div>
+
+      <div className="relative z-10 flex min-h-screen flex-col">
+        <header className="px-6 py-8">
+          <div className="mx-auto flex max-w-7xl items-center gap-3">
+            <div className="h-3 w-3 rounded-full bg-[#14b8a6] shadow-[0_0_0_4px_rgba(20,184,166,0.1)]" />
+            <span className="text-xs font-bold uppercase tracking-[0.2em] text-slate-400">AirLiquide Platform</span>
+          </div>
+        </header>
+
+        <main className="flex flex-1 flex-col justify-center px-6 pb-20">
+          <div className="mx-auto w-full max-w-7xl">
+            <div className="mb-24 grid items-center gap-16 lg:grid-cols-2">
+              <div>
+                <h1 className="mb-8 text-5xl font-extrabold leading-[1.1] tracking-tight text-slate-900 lg:text-7xl">
+                  Less Manual Work. <br />
+                  <span className="bg-gradient-to-br from-[#0f766e] to-[#14b8a6] bg-clip-text text-transparent">
+                    More Profit.
+                  </span>
+                </h1>
+                <p className="max-w-lg text-xl leading-relaxed text-slate-500">
+                  We orchestrate your data intelligence and strategic operations. Automate the path from chaos to clarity.
+                </p>
+              </div>
+
+              <div className="relative hidden lg:block">
+                <div className="relative mx-auto aspect-square max-w-md">
+                  <div className="absolute inset-0 animate-pulse rounded-full bg-gradient-to-tr from-slate-200 to-slate-50 opacity-20" />
+                  <svg viewBox="0 0 200 200" className="h-full w-full text-[#0f766e] opacity-20">
+                    <path
+                      fill="currentColor"
+                      d="M45.7,118c-13.9-28.9,3.1-66.8,36.4-74.9c29.3-7.1,58.7,11.5,70.9,40c11.6,27.1,0.5,60.9-25.8,75.9C95.5,177.3,57.1,141.7,45.7,118z"
+                    />
+                  </svg>
+                </div>
+              </div>
+            </div>
+
+            <div className="grid gap-8 md:grid-cols-3">
+              <LandingCard
+                index={0}
+                title="Ops Dashboard"
+                subtitle="Centralized command center for supplier risk, contracts, and compliance status."
+                icon={LayoutDashboard}
+                colorClass="bg-[#0f766e]"
+                onClick={() => onNavigate("dashboard")}
+              />
+              <LandingCard
+                index={1}
+                title="Analytics"
+                subtitle="Deep dive into category spend, country distribution, and risk exposure."
+                icon={BarChart3}
+                colorClass="bg-[#f59e0b]"
+                onClick={() => onNavigate("analytics")}
+              />
+              <LandingCard
+                index={2}
+                title="How to Use"
+                subtitle="Documentation, standard operating procedures, and system guides."
+                icon={BookOpen}
+                colorClass="bg-slate-800"
+                onClick={() => onNavigate("docs")}
+              />
+            </div>
+          </div>
+        </main>
+
+        <footer className="py-8 text-center text-sm text-slate-400">
+          Created by Kristina Kalde. Building better automation paths.
+        </footer>
+      </div>
+    </div>
+  );
+}
 
 export default function App() {
   const [view, setView] = useState<"landing" | "dashboard">("landing");
@@ -9,76 +119,5 @@ export default function App() {
     return <SupplierRiskOpsDashboard />;
   }
 
-  return (
-    <div className="min-h-screen bg-[#f4f6f8] text-slate-900">
-      <div className="relative mx-auto flex min-h-screen max-w-6xl flex-col px-6 py-10">
-        <header className="flex items-center gap-3 text-xs font-semibold uppercase tracking-[0.2em] text-slate-400">
-          <span className="h-2 w-2 rounded-full bg-[#14b8a6]" />
-          AirLiquide Platform
-        </header>
-
-        <main className="flex flex-1 flex-col justify-center">
-          <div className="grid gap-10 lg:grid-cols-[1.2fr_1fr] lg:items-center">
-            <div>
-              <h1 className="text-4xl font-extrabold leading-tight text-slate-900 md:text-6xl">
-                Less Manual Work.
-                <span className="block text-[#0f766e]">More Profit.</span>
-              </h1>
-              <p className="mt-4 max-w-xl text-lg text-slate-500">
-                Centralized supplier risk operations with clean UX, fast workflows, and full auditability.
-              </p>
-              <button
-                className="mt-8 inline-flex items-center gap-2 rounded-full bg-[#0f766e] px-6 py-3 text-sm font-semibold text-white shadow hover:bg-[#0d6e66]"
-                onClick={() => setView("dashboard")}
-              >
-                Open Dashboard <ArrowRight className="h-4 w-4" />
-              </button>
-            </div>
-            <div className="hidden justify-center lg:flex">
-              <div className="h-48 w-48 rounded-full bg-[#0f766e]/15" />
-            </div>
-          </div>
-
-          <div className="mt-12 grid gap-6 md:grid-cols-3">
-            <button
-              type="button"
-              onClick={() => setView("dashboard")}
-              className="group rounded-3xl border border-slate-100 bg-white p-6 text-left shadow-sm transition hover:-translate-y-1 hover:shadow-lg"
-            >
-              <div className="mb-4 flex h-12 w-12 items-center justify-center rounded-2xl bg-[#0f766e] text-white">
-                <LayoutDashboard className="h-6 w-6" />
-              </div>
-              <div className="text-lg font-semibold">Ops Dashboard</div>
-              <p className="mt-2 text-sm text-slate-500">Central command center for supplier risk and compliance.</p>
-              <div className="mt-6 text-xs font-semibold uppercase tracking-wide text-slate-400 group-hover:text-slate-700">
-                Open Module →
-              </div>
-            </button>
-
-            <div className="rounded-3xl border border-slate-100 bg-white p-6 text-left opacity-70">
-              <div className="mb-4 flex h-12 w-12 items-center justify-center rounded-2xl bg-amber-500 text-white">
-                <BarChart3 className="h-6 w-6" />
-              </div>
-              <div className="text-lg font-semibold">Analytics</div>
-              <p className="mt-2 text-sm text-slate-500">Deep dives across categories and countries.</p>
-              <div className="mt-6 text-xs font-semibold uppercase tracking-wide text-slate-400">Coming soon</div>
-            </div>
-
-            <div className="rounded-3xl border border-slate-100 bg-white p-6 text-left opacity-70">
-              <div className="mb-4 flex h-12 w-12 items-center justify-center rounded-2xl bg-slate-900 text-white">
-                <BookOpen className="h-6 w-6" />
-              </div>
-              <div className="text-lg font-semibold">How to Use</div>
-              <p className="mt-2 text-sm text-slate-500">Playbooks and onboarding material.</p>
-              <div className="mt-6 text-xs font-semibold uppercase tracking-wide text-slate-400">Coming soon</div>
-            </div>
-          </div>
-        </main>
-
-        <footer className="mt-12 text-center text-xs text-slate-400">
-          Created by Kristina Kalde. Building better automation paths.
-        </footer>
-      </div>
-    </div>
-  );
+  return <LandingPage onNavigate={(next) => (next === "dashboard" ? setView("dashboard") : setView("landing"))} />;
 }
