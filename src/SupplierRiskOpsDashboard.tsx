@@ -1613,7 +1613,7 @@ export default function SupplierRiskOpsDashboard() {
   }, [db.factRows]);
   const emailAutomation = db.settings.emailAutomation;
 
-  const redIgnoranceAlerts = useMemo(() => {
+  const redIgnoranceAlertTasks = useMemo(() => {
     const today = new Date().toISOString().slice(0, 10);
     return db.tasks.filter((t) => {
       if (t.kind !== "email") return false;
@@ -6262,11 +6262,11 @@ export default function SupplierRiskOpsDashboard() {
                 <CardTitle className="text-base text-red-600">Red Ignorance Alert</CardTitle>
               </CardHeader>
               <CardContent>
-                {redIgnoranceAlerts.length === 0 ? (
+                {redIgnoranceAlertTasks.length === 0 ? (
                   <div className="text-sm text-muted-foreground">No escalations pending.</div>
                 ) : (
                   <div className="space-y-2">
-                    {redIgnoranceAlerts.map((t) => (
+                    {redIgnoranceAlertTasks.map((t) => (
                       <div key={t.id} className="rounded-2xl border border-red-200 bg-red-50 p-3">
                         <div className="flex items-center justify-between gap-2">
                           <div>
