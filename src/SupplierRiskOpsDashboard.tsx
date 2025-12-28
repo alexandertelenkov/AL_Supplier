@@ -1607,7 +1607,7 @@ export default function SupplierRiskOpsDashboard() {
     const nm = safeStr(bulkCanonicalName);
     return bulkParsedCodes.length && nm ? planBulkCanonicalName(bulkParsedCodes, nm) : null;
   }, [bulkParsedCodes, bulkCanonicalName, supplierByCode, db.overrides]);
-  const bulkEvaluatedPreview = useMemo(
+  const bulkEvaluatedPreviewState = useMemo(
     () => (bulkParsedCodes.length ? planBulkEvaluated(bulkParsedCodes, bulkEvaluated) : null),
     [bulkParsedCodes, bulkEvaluated, supplierByCode, db.overrides]
   );
@@ -1901,6 +1901,38 @@ export default function SupplierRiskOpsDashboard() {
     });
     return sorted;
   }, [drillCategory, drillSuppliers, drillSuppliersByCountry, drillSort]);
+
+  function jumpToSupplier(code: string) {
+    setQ(code);
+    setActiveTab("suppliers");
+  }
+
+  const worklistSorted = useMemo(() => {
+    const sorted = [...worklist];
+    const dir = fastQueueSort.includes("Asc") ? 1 : -1;
+    if (fastQueueSort.startsWith("Spend")) {
+      sorted.sort((a, b) => (a.totalSpend - b.totalSpend) * dir);
+    } else {
+      sorted.sort((a, b) => a.canonicalName.localeCompare(b.canonicalName) * dir);
+    }
+    return sorted;
+  }, [worklist, fastQueueSort]);
+
+  const drillRows = useMemo(() => {
+    const rows = (drillCategory ? drillSuppliers : drillSuppliersByCountry) as any[];
+    const sorted = [...rows];
+    const dir = drillSortState.dir === "asc" ? 1 : -1;
+    const orderRisk: Record<RiskLevel, number> = { High: 3, "Non-risk": 2, Unknown: 1 };
+    sorted.sort((a, b) => {
+      const key = drillSortState.key;
+      if (key === "risk") return (orderRisk[a.risk] - orderRisk[b.risk]) * dir;
+      if (key === "contractStatus") return String(a.contractStatus).localeCompare(String(b.contractStatus)) * dir;
+      if (key === "canonicalName") return String(a.canonicalName).localeCompare(String(b.canonicalName)) * dir;
+      if (key === "categories") return String(a.categories?.[0] ?? "").localeCompare(String(b.categories?.[0] ?? "")) * dir;
+      return (Number(a[key] ?? 0) - Number(b[key] ?? 0)) * dir;
+    });
+    return sorted;
+  }, [drillCategory, drillSuppliers, drillSuppliersByCountry, drillSortState]);
 
   function jumpToSupplier(code: string) {
     setQ(code);
@@ -4897,9 +4929,9 @@ export default function SupplierRiskOpsDashboard() {
                             </SelectContent>
                           </Select>
                         </div>
-                        {bulkEvaluatedPreview ? (
+                        {bulkEvaluatedPreviewState ? (
                           <div className="mt-2 text-xs text-muted-foreground">
-                            Found {bulkEvaluatedPreview.found.length} • Changes {bulkEvaluatedPreview.changes.length} • Not found {bulkEvaluatedPreview.notFound.length}
+                            Found {bulkEvaluatedPreviewState.found.length} • Changes {bulkEvaluatedPreviewState.changes.length} • Not found {bulkEvaluatedPreviewState.notFound.length}
                           </div>
                         ) : (
                           <div className="mt-2 text-xs text-muted-foreground">Paste codes to generate a change preview.</div>
