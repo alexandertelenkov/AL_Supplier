@@ -195,6 +195,10 @@ type Task = {
   status: "todo" | "done";
 };
 
+type EvaluationChoice = "Evaluated" | "Not evaluated" | "Clear";
+type BulkRiskChoice = RiskLevel | "No change";
+type BulkEvalChoice = EvaluationChoice | "No change";
+
 // -----------------------------
 // Local persistence
 // -----------------------------
@@ -207,6 +211,165 @@ const DEFAULT_SETTINGS: AppSettings = {
   scopeSpendThreshold: 1_000_000,
   missingSubfamilySpendThreshold: 250_000,
 };
+
+const DEMO_FACT_ROWS: FactRow[] = [
+  {
+    supplierName: "Alpine Logistics GmbH",
+    supplierCode: "AT-1001",
+    country: "Austria",
+    entity: "Vienna Ops",
+    year: 2024,
+    category: "Logistics - Ground",
+    family: "Transport",
+    subFamily: "Freight",
+    spend: 2_450_000,
+    po: 120,
+    riskFlag: "Yes",
+    status: "Sent",
+    completion: "Done",
+  },
+  {
+    supplierName: "Alpine Logistics GmbH",
+    supplierCode: "AT-1001",
+    country: "Austria",
+    entity: "Vienna Ops",
+    year: 2024,
+    category: "Logistics - Air",
+    family: "Transport",
+    subFamily: "Air Freight",
+    spend: 620_000,
+    po: 18,
+    riskFlag: "Yes",
+    status: "Sent",
+    completion: "Done",
+  },
+  {
+    supplierName: "Helvetia Metals AG",
+    supplierCode: "CH-2007",
+    country: "Switzerland",
+    entity: "Basel Plant",
+    year: 2024,
+    category: "Metals & Mining",
+    family: "Raw Materials",
+    subFamily: "Aluminum",
+    spend: 3_800_000,
+    po: 45,
+    riskFlag: "No",
+    status: "Signed",
+    completion: "Done",
+  },
+  {
+    supplierName: "Nordic Robotics SA",
+    supplierCode: "CH-2015",
+    country: "Switzerland",
+    entity: "Zurich Lab",
+    year: 2024,
+    category: "Automation",
+    family: "Capital Equipment",
+    subFamily: "",
+    spend: 1_250_000,
+    po: 9,
+    riskFlag: "#REF!",
+    status: "Not sent",
+    completion: "Pending",
+  },
+  {
+    supplierName: "Danube Packaging",
+    supplierCode: "AT-1010",
+    country: "Austria",
+    entity: "Linz Plant",
+    year: 2024,
+    category: "Packaging",
+    family: "Manufacturing",
+    subFamily: "Paper",
+    spend: 980_000,
+    po: 80,
+    riskFlag: "No",
+    status: "Review",
+    completion: "In progress",
+  },
+  {
+    supplierName: "Danube Packaging",
+    supplierCode: "AT-1010",
+    country: "Austria",
+    entity: "Linz Plant",
+    year: 2024,
+    category: "Logistics - Ground",
+    family: "Manufacturing",
+    subFamily: "Paper",
+    spend: 240_000,
+    po: 12,
+    riskFlag: "No",
+    status: "Review",
+    completion: "In progress",
+  },
+  {
+    supplierName: "Baltic Energy Co",
+    supplierCode: "DE-3003",
+    country: "Germany",
+    entity: "Munich Hub",
+    year: 2024,
+    category: "Utilities",
+    family: "Energy",
+    subFamily: "Electricity",
+    spend: 4_200_000,
+    po: 14,
+    riskFlag: "Yes",
+    status: "Not compliant",
+    completion: "Done",
+  },
+  {
+    supplierName: "Alpine Logistik GMBH",
+    supplierCode: "AT-1001",
+    country: "Austria",
+    entity: "Graz Ops",
+    year: 2024,
+    category: "Logistics - Ground",
+    family: "Transport",
+    subFamily: "Freight",
+    spend: 310_000,
+    po: 8,
+    riskFlag: "Yes",
+    status: "Sent",
+    completion: "Done",
+  },
+  {
+    supplierName: "Swiss IT Cloud",
+    supplierCode: "CH-2050",
+    country: "Switzerland",
+    entity: "Geneva HQ",
+    year: 2024,
+    category: "IT Services",
+    family: "Technology",
+    subFamily: "Cloud",
+    spend: 1_600_000,
+    po: 28,
+    riskFlag: "No",
+    status: "Signed",
+    completion: "Done",
+  },
+  {
+    supplierName: "Vienna Office Supplies",
+    supplierCode: "AT-1099",
+    country: "Austria",
+    entity: "Vienna HQ",
+    year: 2024,
+    category: "Office Supplies",
+    family: "Indirect",
+    subFamily: "Stationery",
+    spend: 420_000,
+    po: 120,
+    riskFlag: "#REF!",
+    status: "Not sent",
+    completion: "Pending",
+  },
+];
+
+const DEMO_RULES: CategoryRule[] = [
+  { key: "Logistics - Ground", scope: "Category", defaultRisk: "High", comment: "Demo policy" },
+  { key: "Automation", scope: "Category", defaultRisk: "High", comment: "Demo policy" },
+  { key: "Raw Materials", scope: "Family", defaultRisk: "High", comment: "Demo policy" },
+];
 
 type PersistedDB = {
   factRows: FactRow[];
@@ -1169,21 +1332,39 @@ export default function SupplierRiskOpsDashboard() {
   const [taskNote, setTaskNote] = useState("");
   const [taskSupplierCode, setTaskSupplierCode] = useState("");
 
+  const [selectedSuppliers, setSelectedSuppliers] = useState<Set<string>>(new Set());
+  const [bulkMarkRisk, setBulkMarkRisk] = useState<BulkRiskChoice>("No change");
+  const [bulkMarkEvaluated, setBulkMarkEvaluated] = useState<BulkEvalChoice>("No change");
+  const [fastQueueSort, setFastQueueSort] = useState<"SpendDesc" | "SpendAsc" | "NameAsc" | "NameDesc">("SpendDesc");
+  const [categoryTopSort, setCategoryTopSort] = useState<"HighRiskDesc" | "TotalDesc">("HighRiskDesc");
+  const [categorySpendSort, setCategorySpendSort] = useState<"HighRiskDesc" | "TotalDesc">("HighRiskDesc");
+  const [drillSort, setDrillSort] = useState<{ key: string; dir: "asc" | "desc" }>({ key: "spendInSlice", dir: "desc" });
+  const [categoryTableSort, setCategoryTableSort] = useState<{ key: string; dir: "asc" | "desc" }>({ key: "highRiskSuppliers", dir: "desc" });
+  const [barInsight, setBarInsight] = useState<{ title: string; label: string; details: string[] } | null>(null);
+
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     saveDB(db);
   }, [db]);
 
+  const availableCountries = useMemo(() => {
+    const list = uniq(db.factRows.map((r) => safeStr(r.country)).filter(Boolean)).sort();
+    return ["Overall", ...list];
+  }, [db.factRows]);
+  const scopedFactRows = useMemo(() => {
+    if (globalCountry === "Overall") return db.factRows;
+    return db.factRows.filter((r) => safeStr(r.country) === globalCountry);
+  }, [db.factRows, globalCountry]);
   const suppliers = useMemo(
-    () => buildSupplierMaster(db.factRows, db.overrides, db.categoryRules, db.log, db.settings),
-    [db.factRows, db.overrides, db.categoryRules, db.log, db.settings]
+    () => buildSupplierMaster(scopedFactRows, db.overrides, db.categoryRules, db.log, db.settings),
+    [scopedFactRows, db.overrides, db.categoryRules, db.log, db.settings]
   );
 
   const duplicates = useMemo(() => buildDuplicates(suppliers), [suppliers]);
   const issues = useMemo(
-    () => buildIssues(db.factRows, suppliers, duplicates, db.settings, db.categoryRules),
-    [db.factRows, suppliers, duplicates, db.settings, db.categoryRules]
+    () => buildIssues(scopedFactRows, suppliers, duplicates, db.settings, db.categoryRules),
+    [scopedFactRows, suppliers, duplicates, db.settings, db.categoryRules]
   );
 
   const issueBuckets = useMemo(() => {
@@ -1205,8 +1386,8 @@ export default function SupplierRiskOpsDashboard() {
       .filter((i) => (issueSeverityFilter === "All" ? true : i.severity === issueSeverityFilter))
       .slice(0, 1000);
   }, [issues, issueTypeFilter, issueSeverityFilter]);
-  const categoryMetrics = useMemo(() => buildCategoryMetrics(db.factRows, suppliers), [db.factRows, suppliers]);
-  const countryMetrics = useMemo(() => buildCountryMetrics(db.factRows, suppliers), [db.factRows, suppliers]);
+  const categoryMetrics = useMemo(() => buildCategoryMetrics(scopedFactRows, suppliers), [scopedFactRows, suppliers]);
+  const countryMetrics = useMemo(() => buildCountryMetrics(scopedFactRows, suppliers), [scopedFactRows, suppliers]);
   const categories = useMemo(() => ["All", ...uniq(categoryMetrics.map((c) => c.category)).sort()], [categoryMetrics]);
 
   const categoryMetricsSorted = useMemo(() => {
@@ -1257,6 +1438,22 @@ export default function SupplierRiskOpsDashboard() {
   useEffect(() => {
     if (!fastCategory && categories.length > 1) setFastCategory(categories[1]);
   }, [fastCategory, categories]);
+
+  useEffect(() => {
+    setDrillCategory(null);
+    setDrillCountry(null);
+    setBarInsight(null);
+  }, [globalCountry]);
+
+  useEffect(() => {
+    setBulkNameSelected(new Set());
+  }, [bulkNameQuery]);
+
+  useEffect(() => {
+    if (!availableCountries.includes(globalCountry)) {
+      setGlobalCountry("Overall");
+    }
+  }, [availableCountries, globalCountry]);
 
   const kpis = useMemo(() => {
     const total = suppliers.length;
@@ -1357,6 +1554,13 @@ export default function SupplierRiskOpsDashboard() {
     for (const s of suppliers) m.set(s.code, s);
     return m;
   }, [suppliers]);
+  const bulkNameMatches = useMemo(() => {
+    const needle = bulkNameQuery.trim().toLowerCase();
+    if (!needle) return [];
+    return suppliers
+      .filter((s) => s.canonicalName.toLowerCase().includes(needle) || s.code.toLowerCase().includes(needle))
+      .slice(0, 200);
+  }, [bulkNameQuery, suppliers]);
 
   // bulk previews (plan-before-apply)
   const bulkParsedCodes = useMemo(() => parseCodes(bulkCodes), [bulkCodes]);
@@ -1373,6 +1577,10 @@ export default function SupplierRiskOpsDashboard() {
     const nm = safeStr(bulkCanonicalName);
     return bulkParsedCodes.length && nm ? planBulkCanonicalName(bulkParsedCodes, nm) : null;
   }, [bulkParsedCodes, bulkCanonicalName, supplierByCode, db.overrides]);
+  const bulkEvaluatedPreview = useMemo(
+    () => (bulkParsedCodes.length ? planBulkEvaluated(bulkParsedCodes, bulkEvaluated) : null),
+    [bulkParsedCodes, bulkEvaluated, supplierByCode, db.overrides]
+  );
 
   const categoryFastPreview = useMemo(() => {
     const cat = safeStr(fastCategory);
@@ -1391,6 +1599,17 @@ export default function SupplierRiskOpsDashboard() {
       eligibleCodes: eligible.map((s) => s.code),
     };
   }, [fastCategory, suppliers, db.settings.dominanceShareThreshold, db.settings.multiCategorySecondShareThreshold]);
+
+  const sortedCategoryMetrics = useMemo(() => {
+    const sorted = [...categoryMetrics];
+    const dir = categoryTableSort.dir === "asc" ? 1 : -1;
+    sorted.sort((a, b) => {
+      const key = categoryTableSort.key;
+      if (key === "category") return a.category.localeCompare(b.category) * dir;
+      return (Number((a as any)[key] ?? 0) - Number((b as any)[key] ?? 0)) * dir;
+    });
+    return sorted;
+  }, [categoryMetrics, categoryTableSort]);
 
   const drillSuppliers = useMemo(() => {
     if (!drillCategory) return [] as any[];
@@ -1649,6 +1868,38 @@ export default function SupplierRiskOpsDashboard() {
     }));
   };
 
+  const worklistSorted = useMemo(() => {
+    const sorted = [...worklist];
+    const dir = fastQueueSort.includes("Asc") ? 1 : -1;
+    if (fastQueueSort.startsWith("Spend")) {
+      sorted.sort((a, b) => (a.totalSpend - b.totalSpend) * dir);
+    } else {
+      sorted.sort((a, b) => a.canonicalName.localeCompare(b.canonicalName) * dir);
+    }
+    return sorted;
+  }, [worklist, fastQueueSort]);
+
+  const drillRows = useMemo(() => {
+    const rows = (drillCategory ? drillSuppliers : drillSuppliersByCountry) as any[];
+    const sorted = [...rows];
+    const dir = drillSort.dir === "asc" ? 1 : -1;
+    const orderRisk: Record<RiskLevel, number> = { High: 3, "Non-risk": 2, Unknown: 1 };
+    sorted.sort((a, b) => {
+      const key = drillSort.key;
+      if (key === "risk") return (orderRisk[a.risk] - orderRisk[b.risk]) * dir;
+      if (key === "contractStatus") return String(a.contractStatus).localeCompare(String(b.contractStatus)) * dir;
+      if (key === "canonicalName") return String(a.canonicalName).localeCompare(String(b.canonicalName)) * dir;
+      if (key === "categories") return String(a.categories?.[0] ?? "").localeCompare(String(b.categories?.[0] ?? "")) * dir;
+      return (Number(a[key] ?? 0) - Number(b[key] ?? 0)) * dir;
+    });
+    return sorted;
+  }, [drillCategory, drillSuppliers, drillSuppliersByCountry, drillSort]);
+
+  function jumpToSupplier(code: string) {
+    setQ(code);
+    setActiveTab("suppliers");
+  }
+
   function pushLog(entry: Omit<LogEntry, "id" | "ts" | "actor">) {
     const e: LogEntry = { id: uuid(), ts: nowIso(), actor, ...entry };
     setDB((prev) => ({ ...prev, log: [e, ...prev.log] }));
@@ -1809,6 +2060,27 @@ export default function SupplierRiskOpsDashboard() {
     setActiveTab("overview");
   }
 
+  function loadDemoData() {
+    const entry: LogEntry = {
+      id: uuid(),
+      ts: nowIso(),
+      actor,
+      type: "IMPORT",
+      summary: `Loaded demo dataset (${DEMO_FACT_ROWS.length} rows)`,
+      details: { rows: DEMO_FACT_ROWS.length, countries: uniq(DEMO_FACT_ROWS.map((r) => r.country)).filter(Boolean) },
+    };
+    setDB({
+      factRows: DEMO_FACT_ROWS,
+      overrides: {},
+      categoryRules: DEMO_RULES,
+      settings: DEFAULT_SETTINGS,
+      tasks: [],
+      log: [entry],
+      lastUndo: null,
+    });
+    setActiveTab("overview");
+  }
+
   function parseCodes(text: string) {
     return uniq(
       text
@@ -1816,6 +2088,48 @@ export default function SupplierRiskOpsDashboard() {
         .map((x) => normCode(x))
         .filter(Boolean)
     );
+  }
+
+  function toggleSupplierSelection(code: string) {
+    setSelectedSuppliers((prev) => {
+      const next = new Set(prev);
+      if (next.has(code)) next.delete(code);
+      else next.add(code);
+      return next;
+    });
+  }
+
+  function toggleSelectAllSuppliers() {
+    setSelectedSuppliers((prev) => {
+      const next = new Set(prev);
+      const allVisible = supplierFiltered.map((s) => s.code);
+      const hasAll = allVisible.every((code) => next.has(code));
+      if (hasAll) {
+        allVisible.forEach((code) => next.delete(code));
+      } else {
+        allVisible.forEach((code) => next.add(code));
+      }
+      return next;
+    });
+  }
+
+  function clearSelectedSuppliers() {
+    setSelectedSuppliers(new Set());
+  }
+
+  function toggleBulkNameSelection(code: string) {
+    setBulkNameSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(code)) next.delete(code);
+      else next.add(code);
+      return next;
+    });
+  }
+
+  function applyBulkNameSelection() {
+    const codes = uniq([...parseCodes(bulkCodes), ...Array.from(bulkNameSelected)]);
+    setBulkCodes(codes.join("\n"));
+    setBulkNameSelected(new Set());
   }
 
   function cleanOverride(ov?: SupplierOverride): SupplierOverride | undefined {
@@ -2309,6 +2623,21 @@ export default function SupplierRiskOpsDashboard() {
               <span className="text-xs text-muted-foreground">Actor</span>
               <Input value={actor} onChange={(e) => setActor(e.target.value)} className="h-9 w-[160px]" />
             </div>
+            <div className="hidden items-center gap-2 md:flex">
+              <span className="text-xs text-muted-foreground">Country</span>
+              <Select value={globalCountry} onValueChange={(v: any) => setGlobalCountry(v)}>
+                <SelectTrigger className="h-9 w-[180px]">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {availableCountries.map((country) => (
+                    <SelectItem key={country} value={country}>
+                      {country}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
 
             <input
               ref={fileInputRef}
@@ -2329,6 +2658,9 @@ export default function SupplierRiskOpsDashboard() {
 
             <Button variant="secondary" className="gap-2" onClick={() => fileInputRef.current?.click()}>
               <Upload className="h-4 w-4" /> Import XLSX/JSON
+            </Button>
+            <Button variant="outline" className="gap-2" onClick={loadDemoData}>
+              <Database className="h-4 w-4" /> Load demo data
             </Button>
             <Button variant="outline" className="gap-2" onClick={exportDB}>
               <Download className="h-4 w-4" /> Export DB
@@ -2891,6 +3223,27 @@ export default function SupplierRiskOpsDashboard() {
                   </Card>
                 </div>
 
+                {barInsight ? (
+                  <Card>
+                    <CardHeader>
+                      <CardTitle className="flex items-center justify-between text-base">
+                        <span>Bar analysis: {barInsight.label}</span>
+                        <Button variant="outline" size="sm" onClick={() => setBarInsight(null)}>
+                          Clear
+                        </Button>
+                      </CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                      <div className="text-sm text-muted-foreground">{barInsight.title}</div>
+                      <ul className="mt-2 list-disc space-y-1 pl-5 text-sm">
+                        {barInsight.details.map((d, idx) => (
+                          <li key={`${d}-${idx}`}>{d}</li>
+                        ))}
+                      </ul>
+                    </CardContent>
+                  </Card>
+                ) : null}
+
                 {(drillCategory || drillCountry) ? (
                   <Card>
                     <CardHeader>
@@ -3009,6 +3362,52 @@ export default function SupplierRiskOpsDashboard() {
                     </CardTitle>
                   </CardHeader>
                   <CardContent>
+                    <div className="mb-4 rounded-2xl border p-3">
+                      <div className="flex flex-wrap items-center justify-between gap-3">
+                        <div>
+                          <div className="text-sm font-medium">Bulk mark suppliers</div>
+                          <div className="text-xs text-muted-foreground">
+                            Selected: {selectedSuppliers.size} suppliers. Choose risk/evaluated and apply.
+                          </div>
+                        </div>
+                        <div className="flex flex-wrap gap-2">
+                          <Select value={bulkMarkRisk} onValueChange={(v: any) => setBulkMarkRisk(v)}>
+                            <SelectTrigger className="w-[180px]">
+                              <SelectValue placeholder="Risk" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="No change">Risk: no change</SelectItem>
+                              <SelectItem value="High">Risk: High</SelectItem>
+                              <SelectItem value="Non-risk">Risk: Non-risk</SelectItem>
+                              <SelectItem value="Unknown">Risk: Unknown</SelectItem>
+                            </SelectContent>
+                          </Select>
+                          <Select value={bulkMarkEvaluated} onValueChange={(v: any) => setBulkMarkEvaluated(v)}>
+                            <SelectTrigger className="w-[200px]">
+                              <SelectValue placeholder="Evaluated" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="No change">Evaluated: no change</SelectItem>
+                              <SelectItem value="Evaluated">Evaluated: Yes</SelectItem>
+                              <SelectItem value="Not evaluated">Evaluated: No</SelectItem>
+                              <SelectItem value="Clear">Evaluated: Clear override</SelectItem>
+                            </SelectContent>
+                          </Select>
+                          <Button
+                            variant="destructive"
+                            className="gap-2"
+                            onClick={bulkApplyMarkedSuppliers}
+                            disabled={selectedSuppliers.size === 0}
+                          >
+                            Set As
+                          </Button>
+                          <Button variant="outline" onClick={clearSelectedSuppliers}>
+                            Clear selection
+                          </Button>
+                        </div>
+                      </div>
+                    </div>
+
                     <div className="grid gap-2 md:grid-cols-5">
                       <div className="md:col-span-2">
                         <div className="relative">
@@ -4011,6 +4410,93 @@ export default function SupplierRiskOpsDashboard() {
                             <RefreshCw className="h-4 w-4" /> Apply
                           </Button>
                         </div>
+                      </CardContent>
+                    </Card>
+
+                    <Card>
+                      <CardContent className="p-4">
+                        <div className="flex items-center justify-between">
+                          <div>
+                            <div className="text-sm font-medium">Set evaluated status</div>
+                            <div className="text-xs text-muted-foreground">Override evaluation state.</div>
+                          </div>
+                          <Select value={bulkEvaluated} onValueChange={(v: any) => setBulkEvaluated(v)}>
+                            <SelectTrigger className="w-[190px]">
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="Evaluated">Evaluated</SelectItem>
+                              <SelectItem value="Not evaluated">Not evaluated</SelectItem>
+                              <SelectItem value="Clear">Clear override</SelectItem>
+                            </SelectContent>
+                          </Select>
+                        </div>
+                        {bulkEvaluatedPreview ? (
+                          <div className="mt-2 text-xs text-muted-foreground">
+                            Found {bulkEvaluatedPreview.found.length} • Changes {bulkEvaluatedPreview.changes.length} • Not found {bulkEvaluatedPreview.notFound.length}
+                          </div>
+                        ) : (
+                          <div className="mt-2 text-xs text-muted-foreground">Paste codes to generate a change preview.</div>
+                        )}
+                        <div className="mt-3 flex justify-end">
+                          <Button className="gap-2" variant="secondary" onClick={bulkApplyEvaluated}>
+                            <RefreshCw className="h-4 w-4" /> Apply
+                          </Button>
+                        </div>
+                      </CardContent>
+                    </Card>
+
+                    <Card>
+                      <CardContent className="p-4">
+                        <div className="text-sm font-medium">Find suppliers by name or code</div>
+                        <div className="text-xs text-muted-foreground">Type part of a name or code, then add matches into bulk list.</div>
+                        <Input
+                          value={bulkNameQuery}
+                          onChange={(e) => setBulkNameQuery(e.target.value)}
+                          placeholder="Search supplier name or code"
+                          className="mt-2"
+                        />
+                        {bulkNameMatches.length ? (
+                          <>
+                            <div className="mt-2 max-h-[220px] overflow-auto rounded-xl border">
+                              <Table>
+                                <TableHeader>
+                                  <TableRow>
+                                    <TableHead className="w-[40px]" />
+                                    <TableHead>Supplier</TableHead>
+                                    <TableHead>Code</TableHead>
+                                    <TableHead>Risk</TableHead>
+                                  </TableRow>
+                                </TableHeader>
+                                <TableBody>
+                                  {bulkNameMatches.map((s) => (
+                                    <TableRow key={s.code}>
+                                      <TableCell>
+                                        <input
+                                          type="checkbox"
+                                          checked={bulkNameSelected.has(s.code)}
+                                          onChange={() => toggleBulkNameSelection(s.code)}
+                                        />
+                                      </TableCell>
+                                      <TableCell className="font-medium">{s.canonicalName}</TableCell>
+                                      <TableCell className="text-xs text-muted-foreground">{s.code}</TableCell>
+                                      <TableCell>
+                                        <RiskBadge risk={s.risk} />
+                                      </TableCell>
+                                    </TableRow>
+                                  ))}
+                                </TableBody>
+                              </Table>
+                            </div>
+                            <div className="mt-2 flex justify-end">
+                              <Button variant="outline" onClick={applyBulkNameSelection} disabled={bulkNameSelected.size === 0}>
+                                Add selected to bulk list
+                              </Button>
+                            </div>
+                          </>
+                        ) : (
+                          <div className="mt-2 text-xs text-muted-foreground">No matches yet. Start typing to search.</div>
+                        )}
                       </CardContent>
                     </Card>
 
