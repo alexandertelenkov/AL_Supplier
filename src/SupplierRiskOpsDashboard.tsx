@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as XLSX from "xlsx";
 import { motion } from "framer-motion";
 import {
@@ -78,6 +78,11 @@ type BarPaletteKey = "country" | "category" | "riskLevel" | "contractStatus" | "
 type BarChartSettings = {
   fillStyle: BarFillStyle;
   palettes: Record<BarPaletteKey, Record<string, string>>;
+  metricColors: {
+    highRisk: string;
+    totalSuppliers: string;
+    spend: string;
+  };
   rulesNote?: string;
 };
 
@@ -270,6 +275,11 @@ const DEFAULT_SETTINGS: AppSettings = {
       riskLevel: { ...DEFAULT_RISK_PALETTE },
       contractStatus: { ...DEFAULT_CONTRACT_PALETTE },
       funnelStage: {},
+    },
+    metricColors: {
+      highRisk: "#fca5a5",
+      totalSuppliers: "#93c5fd",
+      spend: "#60a5fa",
     },
     rulesNote: "",
   },
@@ -588,6 +598,10 @@ function normalizeSettings(settings?: LegacySettings): AppSettings {
     palettes: {
       ...DEFAULT_SETTINGS.barChartSettings.palettes,
       ...(merged.barChartSettings?.palettes ?? {}),
+    },
+    metricColors: {
+      ...DEFAULT_SETTINGS.barChartSettings.metricColors,
+      ...(merged.barChartSettings?.metricColors ?? {}),
     },
   };
 
@@ -1379,7 +1393,7 @@ function getReadableTextColor(hex: string) {
   return luminance > 0.65 ? "#0f172a" : "#f8fafc";
 }
 
-function RiskBadge({ risk, tone }: { risk: RiskLevel; tone?: string }) {
+const RiskBadge = React.memo(function RiskBadge({ risk, tone }: { risk: RiskLevel; tone?: string }) {
   if (tone) {
     return (
       <Badge
@@ -1394,9 +1408,9 @@ function RiskBadge({ risk, tone }: { risk: RiskLevel; tone?: string }) {
   if (risk === "High") return <Badge variant="destructive">High risk</Badge>;
   if (risk === "Non-risk") return <Badge variant="secondary">Non-risk</Badge>;
   return <Badge variant="outline">Unknown</Badge>;
-}
+});
 
-function ContractBadge({ status, tone }: { status: ContractStatus; tone?: string }) {
+const ContractBadge = React.memo(function ContractBadge({ status, tone }: { status: ContractStatus; tone?: string }) {
   if (tone) {
     return (
       <Badge
@@ -1414,16 +1428,16 @@ function ContractBadge({ status, tone }: { status: ContractStatus; tone?: string
   if (status === "Review") return <Badge variant="outline">Review</Badge>;
   if (status === "N/A") return <Badge variant="secondary">N/A</Badge>;
   return <Badge variant="outline">Not sent</Badge>;
-}
+});
 
-function SeverityBadge({ sev }: { sev: IssueSeverity }) {
+const SeverityBadge = React.memo(function SeverityBadge({ sev }: { sev: IssueSeverity }) {
   if (sev === "Critical") return <Badge variant="destructive">Critical</Badge>;
   if (sev === "High") return <Badge variant="destructive">High</Badge>;
   if (sev === "Medium") return <Badge variant="outline">Medium</Badge>;
   return <Badge variant="secondary">Low</Badge>;
-}
+});
 
-function EmptyState({ title, subtitle }: { title: string; subtitle?: string }) {
+const EmptyState = React.memo(function EmptyState({ title, subtitle }: { title: string; subtitle?: string }) {
   return (
     <Card>
       <CardContent className="py-10 text-center">
@@ -1435,6 +1449,325 @@ function EmptyState({ title, subtitle }: { title: string; subtitle?: string }) {
       </CardContent>
     </Card>
   );
+});
+
+type SupplierDialogProps = {
+  supplier: SupplierMaster;
+  overrides: Record<string, SupplierOverride>;
+  actor: string;
+  bulkContactName: string;
+  bulkContactEmail: string;
+  supplierContactEmail?: string;
+  onSetSupplierOverride: (code: string, patch: Partial<SupplierOverride>) => void;
+  onSetCanonical: (code: string, name: string) => void;
+  onAddTask: (task: {
+    supplierCode: string;
+    supplierName: string;
+    title: string;
+    note?: string;
+    date: string;
+    owner: string;
+    dueDate: string;
+    contactName?: string;
+    contactEmail?: string;
+  }) => void;
+  onScheduleEmailFollowUp: (options: {
+    supplierCode: string;
+    supplierName: string;
+    contactName?: string;
+    contactEmail?: string;
+    stage: "initial" | "followup";
+  }) => void;
+};
+
+const SupplierDialog = React.memo(function SupplierDialog({
+  supplier,
+  overrides,
+  actor,
+  bulkContactName,
+  bulkContactEmail,
+  supplierContactEmail,
+  onSetSupplierOverride,
+  onSetCanonical,
+  onAddTask,
+  onScheduleEmailFollowUp,
+}: SupplierDialogProps) {
+  const [open, setOpen] = useState(false);
+  const [taskDate, setTaskDate] = useState(() => todayIso());
+  const [taskOwner, setTaskOwner] = useState(actor);
+  const [taskContactName, setTaskContactName] = useState(bulkContactName);
+  const [taskContactEmail, setTaskContactEmail] = useState(supplierContactEmail || bulkContactEmail);
+  const [taskTitle, setTaskTitle] = useState("");
+  const [taskNote, setTaskNote] = useState("");
+  const [taskDueDate, setTaskDueDate] = useState(() => todayIso());
+
+  useEffect(() => {
+    if (!open) return;
+    setTaskDate(todayIso());
+    setTaskOwner(actor);
+    setTaskContactName(bulkContactName);
+    setTaskContactEmail(supplierContactEmail || bulkContactEmail);
+    setTaskTitle("");
+    setTaskNote("");
+    setTaskDueDate(todayIso());
+  }, [open, actor, bulkContactName, bulkContactEmail, supplierContactEmail]);
+
+  const override = overrides[supplier.code];
+
+  return (
+    <Dialog open={open} onOpenChange={setOpen}>
+      <DialogTrigger asChild>
+        <Button variant="secondary" size="sm" className="gap-2">
+          <Settings className="h-4 w-4" /> Open
+        </Button>
+      </DialogTrigger>
+      <DialogContent className="max-w-3xl">
+        <DialogHeader>
+          <DialogTitle>Supplier card</DialogTitle>
+        </DialogHeader>
+        <div className="grid gap-3 md:grid-cols-2">
+          <Card>
+            <CardHeader className="pb-2">
+              <CardTitle className="text-base">Identity</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="text-sm text-muted-foreground">Supplier code (golden key)</div>
+              <div className="text-lg font-semibold">{supplier.code}</div>
+
+              <Separator className="my-3" />
+
+              <div className="text-sm font-medium">Canonical name</div>
+              <Input
+                value={override?.canonicalName ?? supplier.canonicalName}
+                onChange={(e) => onSetSupplierOverride(supplier.code, { canonicalName: e.target.value })}
+              />
+
+              <div className="mt-3 text-sm font-medium">Name candidates</div>
+              <div className="mt-2 space-y-2">
+                {supplier.nameCandidates.slice(0, 8).map((candidate) => (
+                  <div key={candidate.name} className="flex items-center justify-between gap-2 rounded-xl border p-2">
+                    <div>
+                      <div className="text-sm font-medium">{candidate.name}</div>
+                      <div className="text-xs text-muted-foreground">Seen {candidate.count}×</div>
+                    </div>
+                    <Button variant="outline" size="sm" onClick={() => onSetCanonical(supplier.code, candidate.name)}>
+                      Use
+                    </Button>
+                  </div>
+                ))}
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader className="pb-2">
+              <CardTitle className="text-base">Risk & Contract</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <div className="flex items-center justify-between">
+                <div>
+                  <div className="text-sm font-medium">Risk</div>
+                  <div className="text-xs text-muted-foreground">Overrides beat data & rules.</div>
+                </div>
+                <Select value={override?.risk ?? supplier.risk} onValueChange={(v: any) => onSetSupplierOverride(supplier.code, { risk: v })}>
+                  <SelectTrigger className="w-[160px]">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="High">High</SelectItem>
+                    <SelectItem value="Non-risk">Non-risk</SelectItem>
+                    <SelectItem value="Unknown">Unknown</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="flex items-center justify-between">
+                <div>
+                  <div className="text-sm font-medium">Evaluated</div>
+                  <div className="text-xs text-muted-foreground">Override evaluation status.</div>
+                </div>
+                <Select
+                  value={
+                    override?.evaluated === undefined
+                      ? "auto"
+                      : override?.evaluated
+                        ? "true"
+                        : "false"
+                  }
+                  onValueChange={(v: any) =>
+                    onSetSupplierOverride(supplier.code, {
+                      evaluated: v === "auto" ? undefined : v === "true",
+                    })
+                  }
+                >
+                  <SelectTrigger className="w-[160px]">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="auto">Auto</SelectItem>
+                    <SelectItem value="true">Evaluated</SelectItem>
+                    <SelectItem value="false">Not evaluated</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="flex items-center justify-between">
+                <div>
+                  <div className="text-sm font-medium">Contract status</div>
+                  <div className="text-xs text-muted-foreground">Only relevant for High risk.</div>
+                </div>
+                <Select
+                  value={override?.contractStatus ?? supplier.contractStatus}
+                  onValueChange={(v: any) => onSetSupplierOverride(supplier.code, { contractStatus: v })}
+                >
+                  <SelectTrigger className="w-[180px]">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="Not sent">Not sent</SelectItem>
+                    <SelectItem value="Sent">Sent</SelectItem>
+                    <SelectItem value="Signed">Signed</SelectItem>
+                    <SelectItem value="Review">Review</SelectItem>
+                    <SelectItem value="Not compliant">Not compliant</SelectItem>
+                    <SelectItem value="N/A">N/A</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <Separator />
+
+              <div className="grid gap-2 md:grid-cols-2">
+                <div className="rounded-2xl border p-3">
+                  <div className="text-xs text-muted-foreground">Total spend</div>
+                  <div className="text-lg font-semibold">{fmtMoney(supplier.totalSpend)}</div>
+                </div>
+                <div className="rounded-2xl border p-3">
+                  <div className="text-xs text-muted-foreground">Total POs</div>
+                  <div className="text-lg font-semibold">{Math.round(supplier.totalPO)}</div>
+                </div>
+              </div>
+
+              <div>
+                <div className="text-sm font-medium">Notes (override)</div>
+                <Textarea
+                  value={override?.note ?? ""}
+                  onChange={(e) => onSetSupplierOverride(supplier.code, { note: e.target.value })}
+                  placeholder="Decision rationale, next steps, exceptions…"
+                />
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+
+        <Separator className="my-2" />
+
+        <div className="grid gap-3 md:grid-cols-2">
+          <Card>
+            <CardHeader className="pb-2">
+              <CardTitle className="text-base">Category footprint</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="flex flex-wrap gap-1">
+                {supplier.categories.map((cat) => (
+                  <Badge key={cat} variant="outline">
+                    {cat}
+                  </Badge>
+                ))}
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader className="pb-2">
+              <CardTitle className="text-base">Add action to calendar</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="grid gap-2 md:grid-cols-2">
+                <div>
+                  <div className="text-xs text-muted-foreground">Resolve by</div>
+                  <Input value={taskDate} onChange={(e) => setTaskDate(e.target.value)} type="date" />
+                </div>
+                <div>
+                  <div className="text-xs text-muted-foreground">Owner</div>
+                  <Input value={taskOwner} onChange={(e) => setTaskOwner(e.target.value)} />
+                </div>
+              </div>
+              <div className="mt-2 grid gap-2 md:grid-cols-2">
+                <div>
+                  <div className="text-xs text-muted-foreground">Contact name</div>
+                  <Input value={taskContactName} onChange={(e) => setTaskContactName(e.target.value)} placeholder={bulkContactName || "Procurement contact"} />
+                </div>
+                <div>
+                  <div className="text-xs text-muted-foreground">Contact email</div>
+                  <Input value={taskContactEmail} onChange={(e) => setTaskContactEmail(e.target.value)} placeholder={bulkContactEmail || "name@company.com"} />
+                </div>
+              </div>
+              <div className="mt-2">
+                <div className="text-xs text-muted-foreground">Title</div>
+                <Input value={taskTitle} onChange={(e) => setTaskTitle(e.target.value)} placeholder="Chase signature / send reminder / review docs…" />
+              </div>
+              <div className="mt-2">
+                <div className="text-xs text-muted-foreground">Resolve by</div>
+                <Input value={taskDueDate} onChange={(e) => setTaskDueDate(e.target.value)} type="date" />
+              </div>
+              <div className="mt-2">
+                <div className="text-xs text-muted-foreground">Note</div>
+                <Textarea value={taskNote} onChange={(e) => setTaskNote(e.target.value)} />
+              </div>
+              <div className="mt-2 flex flex-wrap justify-end gap-2">
+                <Button
+                  variant="outline"
+                  className="gap-2"
+                  onClick={() =>
+                    onScheduleEmailFollowUp({
+                      supplierCode: supplier.code,
+                      supplierName: supplier.canonicalName,
+                      contactName: taskContactName || bulkContactName,
+                      contactEmail: taskContactEmail || supplierContactEmail || bulkContactEmail,
+                      stage: "initial",
+                    })
+                  }
+                >
+                  <Upload className="h-4 w-4" /> Email sent (14d)
+                </Button>
+                <Button
+                  className="gap-2"
+                  onClick={() =>
+                    onAddTask({
+                      supplierCode: supplier.code,
+                      supplierName: supplier.canonicalName,
+                      title: taskTitle,
+                      note: taskNote,
+                      date: taskDate,
+                      owner: taskOwner,
+                      dueDate: taskDueDate,
+                      contactName: taskContactName || bulkContactName,
+                      contactEmail: taskContactEmail || supplierContactEmail || bulkContactEmail,
+                    })
+                  }
+                >
+                  <CalendarDays className="h-4 w-4" /> Add task
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+});
+
+function useDebounce<T>(value: T, delayMs: number) {
+  const [debounced, setDebounced] = useState(value);
+
+  useEffect(() => {
+    const handle = window.setTimeout(() => {
+      setDebounced(value);
+    }, delayMs);
+    return () => window.clearTimeout(handle);
+  }, [value, delayMs]);
+
+  return debounced;
 }
 
 // -----------------------------
@@ -1459,6 +1792,7 @@ export default function SupplierRiskOpsDashboard() {
   const [q, setQ] = useState("");
   const [drillCategory, setDrillCategory] = useState<string | null>(null);
   const [drillCountry, setDrillCountry] = useState<string | null>(null);
+  const [drillFunnelStage, setDrillFunnelStage] = useState<string | null>(null);
   const [riskFilter, setRiskFilter] = useState<RiskLevel | "All">("All");
   const [evalFilter, setEvalFilter] = useState<"All" | "Evaluated" | "Not evaluated">("All");
   const [contractFilter, setContractFilter] = useState<ContractStatus | "All">("All");
@@ -1610,6 +1944,7 @@ export default function SupplierRiskOpsDashboard() {
   const categoryMetrics = useMemo(() => buildCategoryMetrics(scopedFactRows, suppliers), [scopedFactRows, suppliers]);
   const countryMetrics = useMemo(() => buildCountryMetrics(scopedFactRows, suppliers), [scopedFactRows, suppliers]);
   const barChartSettings = db.settings.barChartSettings;
+  const metricColors = barChartSettings.metricColors;
   const categories = useMemo(() => ["All", ...uniq(categoryMetrics.map((c) => c.category)).sort()], [categoryMetrics]);
   const riskyCategoryChart = useMemo(
     () =>
@@ -1713,6 +2048,7 @@ export default function SupplierRiskOpsDashboard() {
   useEffect(() => {
     setDrillCategory(null);
     setDrillCountry(null);
+    setDrillFunnelStage(null);
     setBarInsight(null);
   }, [globalCountry]);
 
@@ -1770,7 +2106,8 @@ export default function SupplierRiskOpsDashboard() {
     const total = overviewSuppliers.length;
     const high = overviewSuppliers.filter((s) => s.risk === "High").length;
     const signed = overviewSuppliers.filter((s) => s.contractStatus === "Signed").length;
-    const sent = overviewSuppliers.filter((s) => s.contractStatus === "Sent").length;
+    const sentOnly = overviewSuppliers.filter((s) => s.contractStatus === "Sent").length;
+    const sent = sentOnly + signed;
     const notEval = overviewSuppliers.filter((s) => !s.evaluated).length;
     const notEvalHighRisk = overviewSuppliers.filter((s) => !s.evaluated && s.risk === "High").length;
     const completion = high ? signed / high : 0;
@@ -2012,8 +2349,36 @@ export default function SupplierRiskOpsDashboard() {
       .slice(0, 500);
   }, [drillCountry, scopedFactRows, supplierByCode]);
 
+  const drillSuppliersByFunnel = useMemo(() => {
+    if (!drillFunnelStage) return [] as any[];
+    let filtered = overviewSuppliers;
+    if (drillFunnelStage === "High risk") {
+      filtered = overviewSuppliers.filter((s) => s.risk === "High");
+    } else if (drillFunnelStage === "Sent") {
+      filtered = overviewSuppliers.filter((s) => s.contractStatus === "Sent");
+    } else if (drillFunnelStage === "Signed") {
+      filtered = overviewSuppliers.filter((s) => s.contractStatus === "Signed");
+    } else if (drillFunnelStage === "Pending") {
+      filtered = overviewSuppliers.filter((s) => s.risk === "High" && s.contractStatus !== "Signed");
+    }
+
+    return filtered.map((s) => ({
+      code: s.code,
+      canonicalName: s.canonicalName,
+      risk: s.risk,
+      contractStatus: s.contractStatus,
+      spendInSlice: s.totalSpend,
+      poInSlice: s.totalPO,
+      totalSpend: s.totalSpend,
+      totalPO: s.totalPO,
+      categories: s.categories,
+    }));
+  }, [drillFunnelStage, overviewSuppliers]);
+
+  const debouncedQuery = useDebounce(q, 300);
+
   const supplierFiltered = useMemo(() => {
-    const needle = q.trim().toLowerCase();
+    const needle = debouncedQuery.trim().toLowerCase();
     return suppliers
       .filter((s) => {
         if (riskFilter !== "All" && s.risk !== riskFilter) return false;
@@ -2030,7 +2395,7 @@ export default function SupplierRiskOpsDashboard() {
         );
       })
       .slice(0, 1500); // guardrail for UI
-  }, [suppliers, q, riskFilter, evalFilter, contractFilter, categoryFilter]);
+  }, [suppliers, debouncedQuery, riskFilter, evalFilter, contractFilter, categoryFilter]);
 
   const worklist = useMemo(() => {
     // Fast Action list: High risk and not signed
@@ -2069,7 +2434,7 @@ export default function SupplierRiskOpsDashboard() {
   }, [worklist, fastQueueSort]);
 
   const drillRows = useMemo(() => {
-    const rows = (drillCategory ? drillSuppliers : drillSuppliersByCountry) as any[];
+    const rows = (drillFunnelStage ? drillSuppliersByFunnel : drillCategory ? drillSuppliers : drillSuppliersByCountry) as any[];
     const sorted = [...rows];
     const dir = drillSortState.dir === "asc" ? 1 : -1;
     const orderRisk: Record<RiskLevel, number> = { High: 3, "Non-risk": 2, Unknown: 1 };
@@ -2082,17 +2447,17 @@ export default function SupplierRiskOpsDashboard() {
       return (Number(a[key] ?? 0) - Number(b[key] ?? 0)) * dir;
     });
     return sorted;
-  }, [drillCategory, drillSuppliers, drillSuppliersByCountry, drillSortState]);
+  }, [drillCategory, drillFunnelStage, drillSuppliers, drillSuppliersByCountry, drillSuppliersByFunnel, drillSortState]);
 
   function jumpToSupplier(code: string) {
     setQ(code);
     setActiveTab("suppliers");
   }
 
-  function pushLog(entry: Omit<LogEntry, "id" | "ts" | "actor">) {
+  const pushLog = useCallback((entry: Omit<LogEntry, "id" | "ts" | "actor">) => {
     const e: LogEntry = { id: uuid(), ts: nowIso(), actor, ...entry };
     setDB((prev) => ({ ...prev, log: [e, ...prev.log] }));
-  }
+  }, [actor]);
   async function onImportXlsx(file: File) {
     const buf = await file.arrayBuffer();
     const wb = XLSX.read(buf, { type: "array" });
@@ -2740,7 +3105,7 @@ export default function SupplierRiskOpsDashboard() {
     });
   }
 
-  function setCanonical(code: string, name: string) {
+  const setCanonical = useCallback((code: string, name: string) => {
     setDB((prev) => ({
       ...prev,
       overrides: {
@@ -2754,9 +3119,9 @@ export default function SupplierRiskOpsDashboard() {
       summary: `Canonical name fixed for ${code}`,
       details: { supplierCode: code, canonicalName: name },
     });
-  }
+  }, [pushLog]);
 
-  function setSupplierOverride(code: string, patch: Partial<SupplierOverride>) {
+  const setSupplierOverride = useCallback((code: string, patch: Partial<SupplierOverride>) => {
     setDB((prev) => ({
       ...prev,
       overrides: {
@@ -2770,7 +3135,7 @@ export default function SupplierRiskOpsDashboard() {
       summary: `Supplier override updated: ${code}`,
       details: { supplierCode: code, patch },
     });
-  }
+  }, [pushLog]);
 
   type AppSettingsPatch = Omit<Partial<AppSettings>, "barChartSettings"> & {
     barChartSettings?: Partial<BarChartSettings>;
@@ -2787,6 +3152,10 @@ export default function SupplierRiskOpsDashboard() {
           palettes: {
             ...prev.settings.barChartSettings.palettes,
             ...(patch.barChartSettings?.palettes ?? {}),
+          },
+          metricColors: {
+            ...prev.settings.barChartSettings.metricColors,
+            ...(patch.barChartSettings?.metricColors ?? {}),
           },
         },
       };
@@ -2828,6 +3197,10 @@ export default function SupplierRiskOpsDashboard() {
 
   function getBarColor(kind: BarPaletteKey, key: string, fallback: string) {
     return db.settings.barChartSettings.palettes[kind]?.[key] || fallback;
+  }
+
+  function getMetricColor(key: keyof BarChartSettings["metricColors"], fallback: string) {
+    return db.settings.barChartSettings.metricColors?.[key] || fallback;
   }
 
   function getBarFill(kind: BarPaletteKey, key: string, fallback: string) {
@@ -2888,7 +3261,7 @@ export default function SupplierRiskOpsDashboard() {
     });
   }
 
-  function addTaskEntry(partial: Partial<Task> & { title: string }) {
+  const addTaskEntry = useCallback((partial: Partial<Task> & { title: string }) => {
     const t: Task = {
       id: uuid(),
       date: partial.date ?? taskDate,
@@ -2907,9 +3280,9 @@ export default function SupplierRiskOpsDashboard() {
     };
     setDB((prev) => ({ ...prev, tasks: [t, ...prev.tasks] }));
     pushLog({ type: "TASK", summary: `Task added (${t.date}): ${t.title}`, details: t });
-  }
+  }, [actor, taskDate, taskDueDate, taskOwner, taskContactName, taskContactEmail, db.settings.bulkContactEmail, db.settings.bulkContactName, pushLog]);
 
-  function addTask() {
+  const addTask = useCallback(() => {
     const title = safeStr(taskTitle);
     if (!title) return;
     const supplierName = safeStr(taskSupplierName);
@@ -2930,24 +3303,69 @@ export default function SupplierRiskOpsDashboard() {
     setTaskNote("");
     setTaskSupplierCode("");
     setTaskSupplierName("");
-  }
+  }, [
+    addTaskEntry,
+    taskTitle,
+    taskSupplierName,
+    taskDate,
+    taskNote,
+    taskSupplierCode,
+    taskContactName,
+    taskContactEmail,
+    taskDueDate,
+    db.settings.bulkContactEmail,
+    db.settings.bulkContactName,
+  ]);
 
-  function updateTask(id: string, patch: Partial<Task>) {
+  const addSupplierTask = useCallback(
+    (task: {
+      supplierCode: string;
+      supplierName: string;
+      title: string;
+      note?: string;
+      date: string;
+      owner: string;
+      dueDate: string;
+      contactName?: string;
+      contactEmail?: string;
+    }) => {
+      const title = safeStr(task.title);
+      if (!title) return;
+      const supplierName = safeStr(task.supplierName);
+      const resolvedTitle =
+        supplierName && !title.toLowerCase().includes(supplierName.toLowerCase()) ? `${title} — ${supplierName}` : title;
+      addTaskEntry({
+        title: resolvedTitle,
+        date: task.date,
+        note: task.note,
+        supplierCode: task.supplierCode,
+        supplierName: supplierName || task.supplierName,
+        contactName: task.contactName || db.settings.bulkContactName,
+        contactEmail: task.contactEmail || db.settings.bulkContactEmail,
+        dueDate: task.dueDate,
+        kind: "general",
+        owner: task.owner,
+      });
+    },
+    [addTaskEntry, db.settings.bulkContactEmail, db.settings.bulkContactName]
+  );
+
+  const updateTask = useCallback((id: string, patch: Partial<Task>) => {
     setDB((prev) => {
       const tasks = prev.tasks.map((t) => (t.id === id ? { ...t, ...patch } : t));
       const updated = tasks.find((t) => t.id === id);
       pushLog({ type: "TASK", summary: `Task updated: ${updated?.title}`, details: updated });
       return { ...prev, tasks };
     });
-  }
+  }, [pushLog]);
 
-  function scheduleEmailFollowUp(options: {
+  const scheduleEmailFollowUp = useCallback((options: {
     supplierCode?: string;
     supplierName?: string;
     contactName?: string;
     contactEmail?: string;
     stage: "initial" | "followup";
-  }) {
+  }) => {
     const baseDate = new Date().toISOString().slice(0, 10);
     const followUpDays = emailAutomation.followUpDays ?? 7;
     const initialDays = emailAutomation.initialFollowUpDays ?? 14;
@@ -2971,9 +3389,9 @@ export default function SupplierRiskOpsDashboard() {
           ? `Email sent вЂ” reminder scheduled for ${initialDays} days.`
           : `Follow-up email sent вЂ” reminder scheduled for ${followUpDays} days.`,
     });
-  }
+  }, [addTaskEntry, emailAutomation.followUpDays, emailAutomation.initialFollowUpDays, db.settings.bulkContactEmail, db.settings.bulkContactName]);
 
-  function toggleTask(id: string) {
+  const toggleTask = useCallback((id: string) => {
     setDB((prev) => {
       const tasks = prev.tasks.map((t) =>
         t.id === id
@@ -2984,16 +3402,16 @@ export default function SupplierRiskOpsDashboard() {
       pushLog({ type: "TASK", summary: `Task updated: ${updated?.title}`, details: updated });
       return { ...prev, tasks };
     });
-  }
+  }, [pushLog]);
 
-  function deleteTask(id: string) {
+  const deleteTask = useCallback((id: string) => {
     setDB((prev) => {
       const removed = prev.tasks.find((t) => t.id === id);
       const tasks = prev.tasks.filter((t) => t.id !== id);
       pushLog({ type: "TASK", summary: `Task deleted: ${removed?.title ?? id}`, details: removed });
       return { ...prev, tasks };
     });
-  }
+  }, [pushLog]);
 
   useEffect(() => {
     const today = todayIso();
@@ -3138,11 +3556,11 @@ export default function SupplierRiskOpsDashboard() {
   const pctOfTotal = (value: number) => (overviewKpis.total ? Math.round((value / overviewKpis.total) * 100) : 0);
   const pctOfHighRisk = (value: number) => (overviewKpis.high ? Math.round((value / overviewKpis.high) * 100) : 0);
   const getFunnelColor = (stage: string) => {
-    if (stage === "High risk") return getBarColor("riskLevel", "High", DEFAULT_RISK_PALETTE.High);
+    if (stage === "High risk") return getBarColor("riskLevel", "High", getMetricColor("highRisk", DEFAULT_RISK_PALETTE.High));
     if (stage === "Sent") return getBarColor("contractStatus", "Sent", DEFAULT_CONTRACT_PALETTE.Sent);
     if (stage === "Signed") return getBarColor("contractStatus", "Signed", DEFAULT_CONTRACT_PALETTE.Signed);
-    if (stage === "Pending") return getBarColor("funnelStage", "Pending", "#93c5fd");
-    return getBarColor("funnelStage", stage, "#93c5fd");
+    if (stage === "Pending") return getBarColor("funnelStage", "Pending", getMetricColor("totalSuppliers", "#93c5fd"));
+    return getBarColor("funnelStage", stage, getMetricColor("totalSuppliers", "#93c5fd"));
   };
 
   // -----------------------------
@@ -3266,10 +3684,11 @@ export default function SupplierRiskOpsDashboard() {
           </TabsList>
 
           <TabsContent value="overview" className="mt-4 space-y-4">
-            {db.factRows.length === 0 ? (
-              <EmptyState title="No data loaded" subtitle="Import your XLSX tracker (recommended) or a DB snapshot (JSON)." />
-            ) : (
-              <>
+            {activeTab === "overview" ? (
+              db.factRows.length === 0 ? (
+                <EmptyState title="No data loaded" subtitle="Import your XLSX tracker (recommended) or a DB snapshot (JSON)." />
+              ) : (
+                <>
                 <div className="flex flex-wrap items-center justify-end gap-2">
                   <Dialog>
                     <DialogTrigger asChild>
@@ -3322,6 +3741,51 @@ export default function SupplierRiskOpsDashboard() {
                                 <span className="h-4 w-4 rounded-sm border" style={opt.style} />
                                 {opt.label}
                               </button>
+                            ))}
+                          </div>
+                        </div>
+
+                        <div className="rounded-2xl border p-3">
+                          <div className="text-xs text-muted-foreground">Funnel palette</div>
+                          <div className="mt-2 flex flex-wrap gap-2">
+                            {funnelStages.map((stage) => (
+                              <div key={stage} className="flex items-center gap-2 rounded-full border px-3 py-1 text-xs">
+                                <span className="font-medium">{stage}</span>
+                                <input
+                                  type="color"
+                                  value={getBarColor("funnelStage", stage, getFunnelColor(stage))}
+                                  onChange={(e) => updateBarPalette("funnelStage", stage, e.target.value)}
+                                />
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+
+                        <div className="rounded-2xl border p-3">
+                          <div className="text-xs text-muted-foreground">Overview colors</div>
+                          <div className="mt-2 flex flex-wrap gap-2">
+                            {[
+                              { key: "highRisk", label: "High risk" },
+                              { key: "totalSuppliers", label: "Total suppliers" },
+                              { key: "spend", label: "Spend" },
+                            ].map((opt) => (
+                              <div key={opt.key} className="flex items-center gap-2 rounded-full border px-3 py-1 text-xs">
+                                <span className="font-medium">{opt.label}</span>
+                                <input
+                                  type="color"
+                                  value={metricColors[opt.key as keyof typeof metricColors]}
+                                  onChange={(e) =>
+                                    setAppSettings({
+                                      barChartSettings: {
+                                        metricColors: {
+                                          ...metricColors,
+                                          [opt.key]: e.target.value,
+                                        },
+                                      },
+                                    })
+                                  }
+                                />
+                              </div>
                             ))}
                           </div>
                         </div>
@@ -3389,7 +3853,7 @@ export default function SupplierRiskOpsDashboard() {
                     </CardHeader>
                     <CardContent>
                       <div className="text-3xl font-semibold">{overviewKpis.sent}</div>
-                      <div className="mt-1 text-sm text-muted-foreground">Sent to High risk suppliers</div>
+                      <div className="mt-1 text-sm text-muted-foreground">Sent or signed (High risk)</div>
                       <div className="mt-2 text-xs text-muted-foreground">{pctOfHighRisk(overviewKpis.sent)}% of High risk</div>
                     </CardContent>
                   </Card>
@@ -3428,7 +3892,7 @@ export default function SupplierRiskOpsDashboard() {
                     <CardContent className="h-[280px]">
                       <ResponsiveContainer width="100%" height="100%">
                         <BarChart data={funnelData}>
-                          {renderBarDefs("funnelStage", funnelStages, "#93c5fd")}
+                          {renderBarDefs("funnelStage", funnelStages, getMetricColor("totalSuppliers", "#93c5fd"))}
                           <CartesianGrid strokeDasharray="3 3" />
                           <XAxis dataKey="stage" />
                           <YAxis />
@@ -3436,21 +3900,27 @@ export default function SupplierRiskOpsDashboard() {
                           <Bar
                             dataKey="value"
                             onClick={(d: any) =>
-                              setBarInsight({
-                                title: "Funnel stage",
-                                label: d?.payload?.stage ?? "Unknown",
-                                details: [
-                                  `Value: ${d?.payload?.value ?? 0}`,
-                                  `Scope: ${globalCountry}`,
-                                  "Source: Supplier Master derived from imported fact rows.",
-                                ],
-                              })
+                              (() => {
+                                const stage = d?.payload?.stage ?? "Unknown";
+                                setDrillCategory(null);
+                                setDrillCountry(null);
+                                setDrillFunnelStage(stage);
+                                setBarInsight({
+                                  title: "Funnel stage",
+                                  label: stage,
+                                  details: [
+                                    `Value: ${d?.payload?.value ?? 0}`,
+                                    `Scope: ${globalCountry}`,
+                                    "Source: Supplier Master derived from imported fact rows.",
+                                  ],
+                                });
+                              })()
                             }
                           >
                             {funnelData.map((entry) => (
                               <Cell
                                 key={`funnel-${entry.stage}`}
-                                fill={getBarFill("funnelStage", entry.stage, "#93c5fd")}
+                                fill={getBarFill("funnelStage", entry.stage, getFunnelColor(entry.stage))}
                               />
                             ))}
                           </Bar>
@@ -3556,6 +4026,7 @@ export default function SupplierRiskOpsDashboard() {
                             onClick={(d: any) => {
                               const category = d?.payload?.category ?? null;
                               setDrillCategory(category);
+                              setDrillFunnelStage(null);
                               setBarInsight({
                                 title: "Category risk (by suppliers)",
                                 label: category ?? "Unknown",
@@ -3570,7 +4041,7 @@ export default function SupplierRiskOpsDashboard() {
                             {topRiskyByCount.map((entry) => (
                               <Cell
                                 key={`risk-${entry.category}`}
-                                fill={getBarFill("category", entry.category, "#93c5fd")}
+                                fill={getBarFill("category", entry.category, getMetricColor("highRisk", "#93c5fd"))}
                               />
                             ))}
                           </Bar>
@@ -3580,6 +4051,7 @@ export default function SupplierRiskOpsDashboard() {
                             onClick={(d: any) => {
                               const category = d?.payload?.category ?? null;
                               setDrillCategory(category);
+                              setDrillFunnelStage(null);
                               setBarInsight({
                                 title: "Category volume (by suppliers)",
                                 label: category ?? "Unknown",
@@ -3594,7 +4066,7 @@ export default function SupplierRiskOpsDashboard() {
                             {topRiskyByCount.map((entry) => (
                               <Cell
                                 key={`total-${entry.category}`}
-                                fill={getBarFill("category", entry.category, "#93c5fd")}
+                                fill={getBarFill("category", entry.category, getMetricColor("totalSuppliers", "#93c5fd"))}
                                 fillOpacity={0.35}
                               />
                             ))}
@@ -3638,6 +4110,7 @@ export default function SupplierRiskOpsDashboard() {
                             onClick={(d: any) => {
                               const category = d?.payload?.category ?? null;
                               setDrillCategory(category);
+                              setDrillFunnelStage(null);
                               setBarInsight({
                                 title: "Category risk (by spend)",
                                 label: category ?? "Unknown",
@@ -3652,7 +4125,7 @@ export default function SupplierRiskOpsDashboard() {
                             {topRiskyBySpend.map((entry) => (
                               <Cell
                                 key={`risk-${entry.category}`}
-                                fill={getBarFill("category", entry.category, "#93c5fd")}
+                                fill={getBarFill("category", entry.category, getMetricColor("highRisk", "#93c5fd"))}
                               />
                             ))}
                           </Bar>
@@ -3662,6 +4135,7 @@ export default function SupplierRiskOpsDashboard() {
                             onClick={(d: any) => {
                               const category = d?.payload?.category ?? null;
                               setDrillCategory(category);
+                              setDrillFunnelStage(null);
                               setBarInsight({
                                 title: "Category volume (by spend)",
                                 label: category ?? "Unknown",
@@ -3676,7 +4150,7 @@ export default function SupplierRiskOpsDashboard() {
                             {topRiskyBySpend.map((entry) => (
                               <Cell
                                 key={`total-${entry.category}`}
-                                fill={getBarFill("category", entry.category, "#93c5fd")}
+                                fill={getBarFill("category", entry.category, getMetricColor("spend", "#93c5fd"))}
                                 fillOpacity={0.35}
                               />
                             ))}
@@ -3711,6 +4185,7 @@ export default function SupplierRiskOpsDashboard() {
                             onClick={(d: any) => {
                               const country = d?.payload?.country ?? null;
                               setDrillCountry(country);
+                              setDrillFunnelStage(null);
                               setBarInsight({
                                 title: "Country risk (by suppliers)",
                                 label: country ?? "Unknown",
@@ -3723,7 +4198,7 @@ export default function SupplierRiskOpsDashboard() {
                             }}
                           >
                             {topCountriesByCount.map((entry) => (
-                              <Cell key={`risk-${entry.country}`} fill={getBarFill("country", entry.country, "#fca5a5")} />
+                              <Cell key={`risk-${entry.country}`} fill={getBarFill("country", entry.country, getMetricColor("highRisk", "#fca5a5"))} />
                             ))}
                           </Bar>
                           <Bar
@@ -3732,6 +4207,7 @@ export default function SupplierRiskOpsDashboard() {
                             onClick={(d: any) => {
                               const country = d?.payload?.country ?? null;
                               setDrillCountry(country);
+                              setDrillFunnelStage(null);
                               setBarInsight({
                                 title: "Country volume (by suppliers)",
                                 label: country ?? "Unknown",
@@ -3746,7 +4222,7 @@ export default function SupplierRiskOpsDashboard() {
                             {topCountriesByCount.map((entry) => (
                               <Cell
                                 key={`total-${entry.country}`}
-                                fill={getBarFill("country", entry.country, "#93c5fd")}
+                                fill={getBarFill("country", entry.country, getMetricColor("totalSuppliers", "#93c5fd"))}
                                 fillOpacity={0.4}
                               />
                             ))}
@@ -3844,6 +4320,7 @@ export default function SupplierRiskOpsDashboard() {
                             onClick={(d: any) => {
                               const country = d?.payload?.country ?? null;
                               setDrillCountry(country);
+                              setDrillFunnelStage(null);
                               setBarInsight({
                                 title: "Country risk (by spend)",
                                 label: country ?? "Unknown",
@@ -3856,7 +4333,7 @@ export default function SupplierRiskOpsDashboard() {
                             }}
                           >
                             {topCountriesBySpend.map((entry) => (
-                              <Cell key={`risk-${entry.country}`} fill={getBarFill("country", entry.country, "#fca5a5")} />
+                              <Cell key={`risk-${entry.country}`} fill={getBarFill("country", entry.country, getMetricColor("highRisk", "#fca5a5"))} />
                             ))}
                           </Bar>
                           <Bar
@@ -3865,6 +4342,7 @@ export default function SupplierRiskOpsDashboard() {
                             onClick={(d: any) => {
                               const country = d?.payload?.country ?? null;
                               setDrillCountry(country);
+                              setDrillFunnelStage(null);
                               setBarInsight({
                                 title: "Country volume (by spend)",
                                 label: country ?? "Unknown",
@@ -3879,7 +4357,7 @@ export default function SupplierRiskOpsDashboard() {
                             {topCountriesBySpend.map((entry) => (
                               <Cell
                                 key={`total-${entry.country}`}
-                                fill={getBarFill("country", entry.country, "#93c5fd")}
+                                fill={getBarFill("country", entry.country, getMetricColor("spend", "#93c5fd"))}
                                 fillOpacity={0.4}
                               />
                             ))}
@@ -3910,6 +4388,7 @@ export default function SupplierRiskOpsDashboard() {
                             onClick={(d: any) => {
                               const country = d?.payload?.country ?? null;
                               setDrillCountry(country);
+                              setDrillFunnelStage(null);
                               setBarInsight({
                                 title: "Country risk share",
                                 label: country ?? "Unknown",
@@ -3922,7 +4401,7 @@ export default function SupplierRiskOpsDashboard() {
                             }}
                           >
                             {topCountriesByRiskShare.map((entry) => (
-                              <Cell key={`share-${entry.country}`} fill={getBarFill("country", entry.country, "#fca5a5")} />
+                              <Cell key={`share-${entry.country}`} fill={getBarFill("country", entry.country, getMetricColor("highRisk", "#fca5a5"))} />
                             ))}
                           </Bar>
                         </BarChart>
@@ -3952,17 +4431,25 @@ export default function SupplierRiskOpsDashboard() {
                   </Card>
                 ) : null}
 
-                {(drillCategory || drillCountry) ? (
+                {(drillCategory || drillCountry || drillFunnelStage) ? (
                   <Card>
                     <CardHeader>
                       <CardTitle className="flex items-center justify-between text-base">
-                        <span>Drill-down: {drillCategory ? `Category вЂ” ${drillCategory}` : `Country вЂ” ${drillCountry}`}</span>
+                        <span>
+                          Drill-down:{" "}
+                          {drillFunnelStage
+                            ? `Funnel — ${drillFunnelStage}`
+                            : drillCategory
+                              ? `Category — ${drillCategory}`
+                              : `Country — ${drillCountry}`}
+                        </span>
                         <Button
                           variant="outline"
                           size="sm"
                           onClick={() => {
                             setDrillCategory(null);
                             setDrillCountry(null);
+                            setDrillFunnelStage(null);
                           }}
                         >
                           Clear
@@ -4142,15 +4629,17 @@ export default function SupplierRiskOpsDashboard() {
                     </CardContent>
                   </Card>
                 ) : null}
-              </>
-            )}
+                </>
+              )
+            ) : null}
           </TabsContent>
 
           <TabsContent value="suppliers" className="mt-4 space-y-4">
-            {db.factRows.length === 0 ? (
-              <EmptyState title="Import data first" subtitle="Suppliers tab is powered by the Supplier Master derived from your XLSX." />
-            ) : (
-              <>
+            {activeTab === "suppliers" ? (
+              db.factRows.length === 0 ? (
+                <EmptyState title="Import data first" subtitle="Suppliers tab is powered by the Supplier Master derived from your XLSX." />
+              ) : (
+                <>
                 <Card>
                   <CardHeader>
                     <CardTitle className="flex items-center justify-between text-base">
@@ -4332,247 +4821,18 @@ export default function SupplierRiskOpsDashboard() {
                               <TableCell className="text-right">{Math.round(s.totalPO)}</TableCell>
                               <TableCell className="min-w-[240px]">
                                 <div className="flex flex-wrap gap-2">
-                                  <Dialog>
-                                    <DialogTrigger asChild>
-                                      <Button variant="secondary" size="sm" className="gap-2">
-                                        <Settings className="h-4 w-4" /> Open
-                                      </Button>
-                                    </DialogTrigger>
-                                    <DialogContent className="max-w-3xl">
-                                      <DialogHeader>
-                                        <DialogTitle>Supplier card</DialogTitle>
-                                      </DialogHeader>
-                                      <div className="grid gap-3 md:grid-cols-2">
-                                        <Card>
-                                          <CardHeader className="pb-2">
-                                            <CardTitle className="text-base">Identity</CardTitle>
-                                          </CardHeader>
-                                          <CardContent>
-                                            <div className="text-sm text-muted-foreground">Supplier code (golden key)</div>
-                                            <div className="text-lg font-semibold">{s.code}</div>
-
-                                            <Separator className="my-3" />
-
-                                            <div className="text-sm font-medium">Canonical name</div>
-                                            <Input
-                                              value={db.overrides[s.code]?.canonicalName ?? s.canonicalName}
-                                              onChange={(e) => setSupplierOverride(s.code, { canonicalName: e.target.value })}
-                                            />
-
-                                            <div className="mt-3 text-sm font-medium">Name candidates</div>
-                                            <div className="mt-2 space-y-2">
-                                              {s.nameCandidates.slice(0, 8).map((c) => (
-                                                <div key={c.name} className="flex items-center justify-between gap-2 rounded-xl border p-2">
-                                                  <div>
-                                                    <div className="text-sm font-medium">{c.name}</div>
-                                                    <div className="text-xs text-muted-foreground">Seen {c.count}Г—</div>
-                                                  </div>
-                                                  <Button variant="outline" size="sm" onClick={() => setCanonical(s.code, c.name)}>
-                                                    Use
-                                                  </Button>
-                                                </div>
-                                              ))}
-                                            </div>
-                                          </CardContent>
-                                        </Card>
-
-                                        <Card>
-                                          <CardHeader className="pb-2">
-                                            <CardTitle className="text-base">Risk & Contract</CardTitle>
-                                          </CardHeader>
-                                          <CardContent className="space-y-3">
-                                            <div className="flex items-center justify-between">
-                                              <div>
-                                                <div className="text-sm font-medium">Risk</div>
-                                                <div className="text-xs text-muted-foreground">Overrides beat data & rules.</div>
-                                              </div>
-                                              <Select value={db.overrides[s.code]?.risk ?? s.risk} onValueChange={(v: any) => setSupplierOverride(s.code, { risk: v })}>
-                                                <SelectTrigger className="w-[160px]">
-                                                  <SelectValue />
-                                                </SelectTrigger>
-                                                <SelectContent>
-                                                  <SelectItem value="High">High</SelectItem>
-                                                  <SelectItem value="Non-risk">Non-risk</SelectItem>
-                                                  <SelectItem value="Unknown">Unknown</SelectItem>
-                                                </SelectContent>
-                                              </Select>
-                                            </div>
-
-                                            <div className="flex items-center justify-between">
-                                              <div>
-                                                <div className="text-sm font-medium">Evaluated</div>
-                                                <div className="text-xs text-muted-foreground">Override evaluation status.</div>
-                                              </div>
-                                              <Select
-                                                value={
-                                                  db.overrides[s.code]?.evaluated === undefined
-                                                    ? "auto"
-                                                    : db.overrides[s.code]?.evaluated
-                                                      ? "true"
-                                                      : "false"
-                                                }
-                                                onValueChange={(v: any) =>
-                                                  setSupplierOverride(s.code, {
-                                                    evaluated: v === "auto" ? undefined : v === "true",
-                                                  })
-                                                }
-                                              >
-                                                <SelectTrigger className="w-[160px]">
-                                                  <SelectValue />
-                                                </SelectTrigger>
-                                                <SelectContent>
-                                                  <SelectItem value="auto">Auto</SelectItem>
-                                                  <SelectItem value="true">Evaluated</SelectItem>
-                                                  <SelectItem value="false">Not evaluated</SelectItem>
-                                                </SelectContent>
-                                              </Select>
-                                            </div>
-
-                                            <div className="flex items-center justify-between">
-                                              <div>
-                                                <div className="text-sm font-medium">Contract status</div>
-                                                <div className="text-xs text-muted-foreground">Only relevant for High risk.</div>
-                                              </div>
-                                              <Select
-                                                value={db.overrides[s.code]?.contractStatus ?? s.contractStatus}
-                                                onValueChange={(v: any) => setSupplierOverride(s.code, { contractStatus: v })}
-                                              >
-                                                <SelectTrigger className="w-[180px]">
-                                                  <SelectValue />
-                                                </SelectTrigger>
-                                                <SelectContent>
-                                                  <SelectItem value="Not sent">Not sent</SelectItem>
-                                                  <SelectItem value="Sent">Sent</SelectItem>
-                                                  <SelectItem value="Signed">Signed</SelectItem>
-                                                  <SelectItem value="Review">Review</SelectItem>
-                                                  <SelectItem value="Not compliant">Not compliant</SelectItem>
-                                                  <SelectItem value="N/A">N/A</SelectItem>
-                                                </SelectContent>
-                                              </Select>
-                                            </div>
-
-                                            <Separator />
-
-                                            <div className="grid gap-2 md:grid-cols-2">
-                                              <div className="rounded-2xl border p-3">
-                                                <div className="text-xs text-muted-foreground">Total spend</div>
-                                                <div className="text-lg font-semibold">{fmtMoney(s.totalSpend)}</div>
-                                              </div>
-                                              <div className="rounded-2xl border p-3">
-                                                <div className="text-xs text-muted-foreground">Total POs</div>
-                                                <div className="text-lg font-semibold">{Math.round(s.totalPO)}</div>
-                                              </div>
-                                            </div>
-
-                                            <div>
-                                              <div className="text-sm font-medium">Notes (override)</div>
-                                              <Textarea
-                                                value={db.overrides[s.code]?.note ?? ""}
-                                                onChange={(e) => setSupplierOverride(s.code, { note: e.target.value })}
-                                                placeholder="Decision rationale, next steps, exceptionsвЂ¦"
-                                              />
-                                            </div>
-                                          </CardContent>
-                                        </Card>
-                                      </div>
-
-                                      <Separator className="my-2" />
-
-                                      <div className="grid gap-3 md:grid-cols-2">
-                                        <Card>
-                                          <CardHeader className="pb-2">
-                                            <CardTitle className="text-base">Category footprint</CardTitle>
-                                          </CardHeader>
-                                          <CardContent>
-                                            <div className="flex flex-wrap gap-1">
-                                              {s.categories.map((c) => (
-                                                <Badge key={c} variant="outline">
-                                                  {c}
-                                                </Badge>
-                                              ))}
-                                            </div>
-                                          </CardContent>
-                                        </Card>
-
-                                        <Card>
-                                          <CardHeader className="pb-2">
-                                            <CardTitle className="text-base">Add action to calendar</CardTitle>
-                                          </CardHeader>
-                                          <CardContent>
-                                            <div className="grid gap-2 md:grid-cols-2">
-                                              <div>
-                                                <div className="text-xs text-muted-foreground">Resolve by</div>
-                                                <Input value={taskDate} onChange={(e) => setTaskDate(e.target.value)} type="date" />
-                                              </div>
-                                              <div>
-                                                <div className="text-xs text-muted-foreground">Owner</div>
-                                                <Input value={taskOwner} onChange={(e) => setTaskOwner(e.target.value)} />
-                                              </div>
-                                            </div>
-                                            <div className="mt-2 grid gap-2 md:grid-cols-2">
-                                              <div>
-                                                <div className="text-xs text-muted-foreground">Contact name</div>
-                                                <Input
-                                                  value={taskContactName}
-                                                  onChange={(e) => setTaskContactName(e.target.value)}
-                                                  placeholder={db.settings.bulkContactName || "Procurement contact"}
-                                                />
-                                              </div>
-                                              <div>
-                                                <div className="text-xs text-muted-foreground">Contact email</div>
-                                                <Input
-                                                  value={taskContactEmail}
-                                                  onChange={(e) => setTaskContactEmail(e.target.value)}
-                                                  placeholder={db.settings.bulkContactEmail || "name@company.com"}
-                                                />
-                                              </div>
-                                            </div>
-                                            <div className="mt-2">
-                                              <div className="text-xs text-muted-foreground">Title</div>
-                                              <Input value={taskTitle} onChange={(e) => setTaskTitle(e.target.value)} placeholder="Chase signature / send reminder / review docsвЂ¦" />
-                                            </div>
-                                            <div className="mt-2">
-                                              <div className="text-xs text-muted-foreground">Resolve by</div>
-                                              <Input value={taskDueDate} onChange={(e) => setTaskDueDate(e.target.value)} type="date" />
-                                            </div>
-                                            <div className="mt-2">
-                                              <div className="text-xs text-muted-foreground">Note</div>
-                                              <Textarea value={taskNote} onChange={(e) => setTaskNote(e.target.value)} />
-                                            </div>
-                                            <div className="mt-2 flex flex-wrap justify-end gap-2">
-                                              <Button
-                                                variant="outline"
-                                                className="gap-2"
-                                                onClick={() => {
-                                                  setTaskSupplierCode(s.code);
-                                                  setTaskSupplierName(s.canonicalName);
-                                                  scheduleEmailFollowUp({
-                                                    supplierCode: s.code,
-                                                    supplierName: s.canonicalName,
-                                                    contactName: taskContactName || db.settings.bulkContactName,
-                                                    contactEmail: taskContactEmail || db.settings.bulkContactEmail,
-                                                    stage: "initial",
-                                                  });
-                                                }}
-                                              >
-                                                <Upload className="h-4 w-4" /> Email sent (14d)
-                                              </Button>
-                                              <Button
-                                                className="gap-2"
-                                                onClick={() => {
-                                                  setTaskSupplierCode(s.code);
-                                                  setTaskSupplierName(s.canonicalName);
-                                                  addTask();
-                                                }}
-                                              >
-                                                <CalendarDays className="h-4 w-4" /> Add task
-                                              </Button>
-                                            </div>
-                                          </CardContent>
-                                        </Card>
-                                      </div>
-                                    </DialogContent>
-                                  </Dialog>
+                                  <SupplierDialog
+                                    supplier={s}
+                                    overrides={db.overrides}
+                                    actor={actor}
+                                    bulkContactName={db.settings.bulkContactName}
+                                    bulkContactEmail={db.settings.bulkContactEmail}
+                                    supplierContactEmail={db.settings.supplierContacts?.[s.code]}
+                                    onSetSupplierOverride={setSupplierOverride}
+                                    onSetCanonical={setCanonical}
+                                    onAddTask={addSupplierTask}
+                                    onScheduleEmailFollowUp={scheduleEmailFollowUp}
+                                  />
 
                                   <Button variant="outline" size="sm" className="gap-2" onClick={() => setSupplierOverride(s.code, { contractStatus: "Sent" })}>
                                     <FileUp className="h-4 w-4" /> Mark Sent
@@ -4647,15 +4907,17 @@ export default function SupplierRiskOpsDashboard() {
                     </div>
                   </CardContent>
                 </Card>
-              </>
-            )}
+                </>
+              )
+            ) : null}
           </TabsContent>
 
           <TabsContent value="categories" className="mt-4 space-y-4">
-            {db.factRows.length === 0 ? (
-              <EmptyState title="Import data first" subtitle="Category analytics needs supplier master." />
-            ) : (
-              <>
+            {activeTab === "categories" ? (
+              db.factRows.length === 0 ? (
+                <EmptyState title="Import data first" subtitle="Category analytics needs supplier master." />
+              ) : (
+                <>
                 <div className="grid gap-3 md:grid-cols-2">
                   <Card>
                     <CardHeader>
@@ -4923,15 +5185,17 @@ export default function SupplierRiskOpsDashboard() {
                     </div>
                   </CardContent>
                 </Card>
-              </>
-            )}
+                </>
+              )
+            ) : null}
           </TabsContent>
 
           <TabsContent value="duplicates" className="mt-4 space-y-4">
-            {db.factRows.length === 0 ? (
-              <EmptyState title="Import data first" subtitle="Duplicate detection relies on supplier master." />
-            ) : (
-              <>
+            {activeTab === "duplicates" ? (
+              db.factRows.length === 0 ? (
+                <EmptyState title="Import data first" subtitle="Duplicate detection relies on supplier master." />
+              ) : (
+                <>
                 <Card>
                   <CardHeader>
                     <CardTitle className="flex items-center gap-2 text-base">
@@ -5217,36 +5481,38 @@ export default function SupplierRiskOpsDashboard() {
                     ) : null}
                   </DialogContent>
                 </Dialog>
-              </>
-            )}
+                </>
+              )
+            ) : null}
           </TabsContent>
 
           <TabsContent value="bulk" className="mt-4 space-y-4">
-            <Card>
-              <CardHeader>
-                <CardTitle className="flex items-center gap-2 text-base">
-                  <FileUp className="h-4 w-4" /> Bulk Operations
-                </CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-4">
-                <div className="grid gap-3 md:grid-cols-2">
-                  <div className="space-y-3">
-                    {db.lastUndo ? (
-                      <Card>
-                        <CardContent className="p-4">
-                          <div className="flex items-start justify-between gap-3">
-                            <div>
-                              <div className="text-sm font-medium">Undo last bulk action</div>
-                              <div className="text-xs text-muted-foreground">{db.lastUndo.summary}</div>
-                              <div className="mt-1 text-xs text-muted-foreground">Changed: {db.lastUndo.items.length}</div>
+            {activeTab === "bulk" ? (
+              <Card>
+                <CardHeader>
+                  <CardTitle className="flex items-center gap-2 text-base">
+                    <FileUp className="h-4 w-4" /> Bulk Operations
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <div className="grid gap-3 md:grid-cols-2">
+                    <div className="space-y-3">
+                      {db.lastUndo ? (
+                        <Card>
+                          <CardContent className="p-4">
+                            <div className="flex items-start justify-between gap-3">
+                              <div>
+                                <div className="text-sm font-medium">Undo last bulk action</div>
+                                <div className="text-xs text-muted-foreground">{db.lastUndo.summary}</div>
+                                <div className="mt-1 text-xs text-muted-foreground">Changed: {db.lastUndo.items.length}</div>
+                              </div>
+                              <Button variant="secondary" onClick={undoLast} className="gap-2">
+                                <Undo2 className="h-4 w-4" /> Undo
+                              </Button>
                             </div>
-                            <Button variant="secondary" onClick={undoLast} className="gap-2">
-                              <Undo2 className="h-4 w-4" /> Undo
-                            </Button>
-                          </div>
-                        </CardContent>
-                      </Card>
-                    ) : null}
+                          </CardContent>
+                        </Card>
+                      ) : null}
 
                     <Card>
                       <CardContent className="p-4">
@@ -5566,63 +5832,68 @@ export default function SupplierRiskOpsDashboard() {
                   </div>
                 </div>
 
-                <Separator />
+                  <Separator />
 
-                <div className="text-xs text-muted-foreground">
-                  Governance tip: use Bulk to mass-set known risk/non-risk suppliers and immediately shrink the evaluation queue.
-                </div>
-              </CardContent>
-            </Card>
+                  <div className="text-xs text-muted-foreground">
+                    Governance tip: use Bulk to mass-set known risk/non-risk suppliers and immediately shrink the evaluation queue.
+                  </div>
+                </CardContent>
+              </Card>
+            ) : null}
           </TabsContent>
 
           <TabsContent value="log" className="mt-4 space-y-4">
-            <Card>
-              <CardHeader>
-                <CardTitle className="flex items-center gap-2 text-base">
-                  <ClipboardList className="h-4 w-4" /> Activity Log (audit trail)
-                </CardTitle>
-              </CardHeader>
-              <CardContent>
-                {db.log.length === 0 ? (
-                  <EmptyState title="No activity yet" subtitle="Import a file or perform actions to generate an audit trail." />
-                ) : (
-                  <div className="max-h-[640px] overflow-auto rounded-2xl border">
-                    <Table>
-                      <TableHeader>
-                        <TableRow>
-                          <TableHead>When</TableHead>
-                          <TableHead>Actor</TableHead>
-                          <TableHead>Type</TableHead>
-                          <TableHead>Summary</TableHead>
-                        </TableRow>
-                      </TableHeader>
-                      <TableBody>
-                        {db.log.slice(0, 800).map((e) => (
-                          <TableRow key={e.id}>
-                            <TableCell className="whitespace-nowrap">{fmtDate(e.ts)}</TableCell>
-                            <TableCell>{e.actor}</TableCell>
-                            <TableCell>
-                              <Badge variant="outline">{e.type}</Badge>
-                            </TableCell>
-                            <TableCell className="min-w-[520px]">
-                              <div className="font-medium">{e.summary}</div>
-                              {e.details ? (
-                                <pre className="mt-1 max-w-[780px] overflow-auto rounded-xl bg-muted p-2 text-[11px] text-muted-foreground">
-                                  {JSON.stringify(e.details, null, 2)}
-                                </pre>
-                              ) : null}
-                            </TableCell>
+            {activeTab === "log" ? (
+              <Card>
+                <CardHeader>
+                  <CardTitle className="flex items-center gap-2 text-base">
+                    <ClipboardList className="h-4 w-4" /> Activity Log (audit trail)
+                  </CardTitle>
+                </CardHeader>
+                <CardContent>
+                  {db.log.length === 0 ? (
+                    <EmptyState title="No activity yet" subtitle="Import a file or perform actions to generate an audit trail." />
+                  ) : (
+                    <div className="max-h-[640px] overflow-auto rounded-2xl border">
+                      <Table>
+                        <TableHeader>
+                          <TableRow>
+                            <TableHead>When</TableHead>
+                            <TableHead>Actor</TableHead>
+                            <TableHead>Type</TableHead>
+                            <TableHead>Summary</TableHead>
                           </TableRow>
-                        ))}
-                      </TableBody>
-                    </Table>
-                  </div>
-                )}
-              </CardContent>
-            </Card>
+                        </TableHeader>
+                        <TableBody>
+                          {db.log.slice(0, 800).map((e) => (
+                            <TableRow key={e.id}>
+                              <TableCell className="whitespace-nowrap">{fmtDate(e.ts)}</TableCell>
+                              <TableCell>{e.actor}</TableCell>
+                              <TableCell>
+                                <Badge variant="outline">{e.type}</Badge>
+                              </TableCell>
+                              <TableCell className="min-w-[520px]">
+                                <div className="font-medium">{e.summary}</div>
+                                {e.details ? (
+                                  <pre className="mt-1 max-w-[780px] overflow-auto rounded-xl bg-muted p-2 text-[11px] text-muted-foreground">
+                                    {JSON.stringify(e.details, null, 2)}
+                                  </pre>
+                                ) : null}
+                              </TableCell>
+                            </TableRow>
+                          ))}
+                        </TableBody>
+                      </Table>
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+            ) : null}
           </TabsContent>
 
           <TabsContent value="calendar" className="mt-4 space-y-4">
+            {activeTab === "calendar" ? (
+            <>
             <div className="grid gap-3 md:grid-cols-2">
               <Card>
                 <CardHeader>
@@ -5861,6 +6132,8 @@ export default function SupplierRiskOpsDashboard() {
                 )}
               </CardContent>
             </Card>
+            </>
+            ) : null}
           </TabsContent>
         </Tabs>
 
