@@ -288,15 +288,6 @@ const DEFAULT_SETTINGS: AppSettings = {
 
 const RISK_LEVELS: RiskLevel[] = ["High", "Non-risk", "Unknown"];
 const CONTRACT_STATUSES: ContractStatus[] = ["Not sent", "Sent", "Signed", "Review", "Not compliant", "N/A"];
-const BAR_PALETTE_FIELDS: { key: keyof AppSettings["barPalette"]; label: string }[] = [
-  { key: "funnel", label: "Funnel bars" },
-  { key: "funnelPending", label: "Funnel pending" },
-  { key: "categoryHighRisk", label: "Category high risk" },
-  { key: "categoryTotal", label: "Category total" },
-  { key: "categoryRiskShare", label: "Category risk share" },
-  { key: "riskMixSuppliers", label: "Risk mix suppliers" },
-  { key: "riskMixSpend", label: "Risk mix spend" },
-];
 
 const DEMO_FACT_ROWS: FactRow[] = [
   {
@@ -1458,16 +1449,6 @@ function getContractColor(status: ContractStatus, fallback: string): string {
   return fallback;
 }
 
-
-// Helper functions
-function getRiskColor(risk: RiskLevel, fallback: string): string {
-  return fallback;
-}
-
-function getContractColor(status: ContractStatus, fallback: string): string {
-  return fallback;
-}
-
 export default function SupplierRiskOpsDashboard() {
   const [db, setDB] = useState<PersistedDB>(() => loadDB());
   const [actor, setActor] = useState("Hero");
@@ -1544,21 +1525,6 @@ export default function SupplierRiskOpsDashboard() {
   const [barAnalysis, setBarAnalysis] = useState<{ title: string; details: Record<string, any> } | null>(null);
   const [bulkContactCode, setBulkContactCode] = useState("");
   const [bulkContactEmail, setBulkContactEmail] = useState("");
-
-  // Helper function to update supplier contacts
-  const upsertSupplierContact = (code: string, email: string) => {
-    setDB(prev => ({
-      ...prev,
-      settings: {
-        ...prev.settings,
-        supplierContacts: {
-          ...(prev.settings.supplierContacts || {}),
-          [code]: email
-        }
-      }
-    }));
-    pushLog({ action: "SUPPLIER_CONTACT_UPDATE", summary: `Updated contact for ${code}` });
-  };
 
  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -2994,8 +2960,8 @@ export default function SupplierRiskOpsDashboard() {
     const contactMap = db.settings.supplierContacts ?? {};
     const byKey = new Map<string, Task>();
     for (const t of tasks) {
-      if (t.kind === "contractFollowup" && t.supplierCode && t.stage) {
-        byKey.set(`${t.supplierCode}::${t.stage}`, t);
+      if (t.kind === "contractFollowup" && t.supplierCode && t.followUpStage) {
+        byKey.set(`${t.supplierCode}::${t.followUpStage}`, t);
       }
     }
     const signedCodes = new Set(allSuppliers.filter((s) => s.contractStatus === "Signed").map((s) => s.code));
@@ -3004,9 +2970,8 @@ export default function SupplierRiskOpsDashboard() {
 
     const makeTask = (
       supplier: SupplierMaster,
-      stage: Task["stage"],
+      followUpStage: Task["followUpStage"],
       dueDate: string,
-      priority: Task["priority"],
       title: string,
       note?: string
     ): Task => ({
@@ -3021,8 +2986,7 @@ export default function SupplierRiskOpsDashboard() {
       supplierName: supplier.canonicalName,
       contactEmail: contactMap[supplier.code],
       kind: "contractFollowup",
-      stage,
-      priority,
+      followUpStage,
       status: "todo",
     });
 
@@ -3036,7 +3000,6 @@ export default function SupplierRiskOpsDashboard() {
               supplier,
               "initial",
               dueDate,
-              "normal",
               `Contract signature expected: ${supplier.canonicalName}`,
               "Auto: 14-day follow-up after first email."
             )
@@ -3061,7 +3024,6 @@ export default function SupplierRiskOpsDashboard() {
             supplier,
             "followup",
             dueDate,
-            "warning",
             `Send reminder email: ${supplier.canonicalName}`,
             "Auto: signature overdue. Ignore Risk until resolved. Reminder required (7 days)."
           )
@@ -3075,7 +3037,6 @@ export default function SupplierRiskOpsDashboard() {
             supplier,
             "urgent",
             dueDate,
-            "urgent",
             `Urgent call required: ${supplier.canonicalName}`,
             "Auto: second reminder overdue. РўСЂРµР±СѓРµС‚СЃСЏ СЃСЂРѕС‡РЅС‹Р№ Р·РІРѕРЅРѕРє."
           )
@@ -3099,7 +3060,7 @@ export default function SupplierRiskOpsDashboard() {
     return by;
   }, [db.tasks]);
   const redIgnoranceAlerts = useMemo(
-    () => db.tasks.filter((t) => t.kind === "contractFollowup" && t.stage === "urgent" && t.status !== "done"),
+    () => db.tasks.filter((t) => t.kind === "contractFollowup" && t.followUpStage === "urgent" && t.status !== "done"),
     [db.tasks]
   );
 
@@ -3135,12 +3096,11 @@ export default function SupplierRiskOpsDashboard() {
 
   const pctOfTotal = (value: number) => (overviewKpis.total ? Math.round((value / overviewKpis.total) * 100) : 0);
   const getFunnelColor = (stage: string) => {
-  if (stage === "High risk") return getBarColor("riskLevel", "High", DEFAULT_RISK_PALETTE.High);
-  if (stage === "Sent") return getBarColor("contractStatus", "Sent", DEFAULT_CONTRACT_PALETTE.Sent);
-  if (stage === "Signed") return getBarColor("contractStatus", "Signed", DEFAULT_CONTRACT_PALETTE.Signed);
-  if (stage === "Pending") return getBarColor("funnelStage", "Pending", "#93c5fd");
-  return getBarColor("funnelStage", stage, "#93c5fd");
-};
+    if (stage === "High risk") return getBarColor("riskLevel", "High", DEFAULT_RISK_PALETTE.High);
+    if (stage === "Sent") return getBarColor("contractStatus", "Sent", DEFAULT_CONTRACT_PALETTE.Sent);
+    if (stage === "Signed") return getBarColor("contractStatus", "Signed", DEFAULT_CONTRACT_PALETTE.Signed);
+    if (stage === "Pending") return getBarColor("funnelStage", "Pending", "#93c5fd");
+    return getBarColor("funnelStage", stage, "#93c5fd");
   };
 
   // -----------------------------
@@ -3724,193 +3684,6 @@ export default function SupplierRiskOpsDashboard() {
                       </div>
                     </CardContent>
                   </Card>
-
-                        <div className="rounded-2xl border p-3">
-                          <div className="text-xs text-muted-foreground">Palette rules</div>
-                          <Textarea
-                            value={barChartSettings.rulesNote ?? ""}
-                            onChange={(e) => setAppSettings({ barChartSettings: { rulesNote: e.target.value } })}
-                            placeholder="e.g. Use blue for volume, red for risk, and keep funnel stages consistent across teams."
-                            className="mt-2 min-h-[90px]"
-                          />
-                        </div>
-
-                        <div className="rounded-2xl border p-3">
-                          <div className="text-xs text-muted-foreground">Email automation rules</div>
-                          <div className="mt-2 grid gap-2">
-                            <div className="flex items-center justify-between gap-2">
-                              <div className="text-xs text-muted-foreground">Initial follow-up (days)</div>
-                              <Input
-                                type="number"
-                                value={emailAutomation.initialFollowUpDays}
-                                onChange={(e) =>
-                                  setAppSettings({
-                                    emailAutomation: {
-                                      ...emailAutomation,
-                                      initialFollowUpDays: Math.max(1, Number(e.target.value) || 1),
-                                    },
-                                  })
-                                }
-                                className="h-8 w-24"
-                              />
-                            </div>
-                            <div className="flex items-center justify-between gap-2">
-                              <div className="text-xs text-muted-foreground">Follow-up after reminder (days)</div>
-                              <Input
-                                type="number"
-                                value={emailAutomation.followUpDays}
-                                onChange={(e) =>
-                                  setAppSettings({
-                                    emailAutomation: {
-                                      ...emailAutomation,
-                                      followUpDays: Math.max(1, Number(e.target.value) || 1),
-                                    },
-                                  })
-                                }
-                                className="h-8 w-24"
-                              />
-                            </div>
-                          </div>
-                        </div>
-
-                        <div className="rounded-2xl border p-3">
-                          <div className="text-xs text-muted-foreground">Country palette</div>
-                          <div className="mt-2 space-y-2">
-                            {paletteCountries.map((country) => (
-                              <div key={country} className="flex items-center justify-between gap-2 rounded-xl border p-2">
-                                <div className="text-sm font-medium">{country}</div>
-                                <div className="flex items-center gap-2">
-                                  <input
-                                    type="color"
-                                    value={getBarColor("country", country, "#60a5fa")}
-                                    onChange={(e) => updateBarPalette("country", country, e.target.value)}
-                                  />
-                                  <Input
-                                    value={getBarColor("country", country, "#60a5fa")}
-                                    onChange={(e) => updateBarPalette("country", country, e.target.value)}
-                                    className="h-8 w-[110px]"
-                                  />
-                                  <Button variant="outline" size="sm" onClick={() => clearBarPalette("country", country)}>
-                                    Reset
-                                  </Button>
-                                </div>
-                              </div>
-                            ))}
-                            {paletteCountries.length === 0 ? (
-                              <div className="text-xs text-muted-foreground">No countries available yet. Import data first.</div>
-                            ) : null}
-                          </div>
-                        </div>
-
-                        <div className="rounded-2xl border p-3">
-                          <div className="text-xs text-muted-foreground">Category palette</div>
-                          <div className="mt-2 max-h-[260px] space-y-2 overflow-auto pr-1">
-                            {paletteCategories.map((category) => (
-                              <div key={category} className="flex items-center justify-between gap-2 rounded-xl border p-2">
-                                <div className="text-sm font-medium">{category}</div>
-                                <div className="flex items-center gap-2">
-                                  <input
-                                    type="color"
-                                    value={getBarColor("category", category, "#93c5fd")}
-                                    onChange={(e) => updateBarPalette("category", category, e.target.value)}
-                                  />
-                                  <Input
-                                    value={getBarColor("category", category, "#93c5fd")}
-                                    onChange={(e) => updateBarPalette("category", category, e.target.value)}
-                                    className="h-8 w-[110px]"
-                                  />
-                                  <Button variant="outline" size="sm" onClick={() => clearBarPalette("category", category)}>
-                                    Reset
-                                  </Button>
-                                </div>
-                              </div>
-                            ))}
-                            {paletteCategories.length === 0 ? (
-                              <div className="text-xs text-muted-foreground">No categories available yet. Import data first.</div>
-                            ) : null}
-                          </div>
-                        </div>
-
-                        <div className="rounded-2xl border p-3">
-                          <div className="text-xs text-muted-foreground">Funnel stages</div>
-                          <div className="mt-2 space-y-2">
-                            {funnelStages.map((stage) => (
-                              <div key={stage} className="flex items-center justify-between gap-2 rounded-xl border p-2">
-                                <div className="text-sm font-medium">{stage}</div>
-                                <div className="flex items-center gap-2">
-                                  <input
-                                    type="color"
-                                    value={getBarColor("funnelStage", stage, "#93c5fd")}
-                                    onChange={(e) => updateBarPalette("funnelStage", stage, e.target.value)}
-                                  />
-                                  <Input
-                                    value={getBarColor("funnelStage", stage, "#93c5fd")}
-                                    onChange={(e) => updateBarPalette("funnelStage", stage, e.target.value)}
-                                    className="h-8 w-[110px]"
-                                  />
-                                  <Button variant="outline" size="sm" onClick={() => clearBarPalette("funnelStage", stage)}>
-                                    Reset
-                                  </Button>
-                                </div>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-
-                        <div className="rounded-2xl border p-3">
-                          <div className="text-xs text-muted-foreground">Risk level palette</div>
-                          <div className="mt-2 space-y-2">
-                            {RISK_LEVEL_OPTIONS.map((risk) => (
-                              <div key={risk} className="flex items-center justify-between gap-2 rounded-xl border p-2">
-                                <div className="text-sm font-medium">{risk}</div>
-                                <div className="flex items-center gap-2">
-                                  <input
-                                    type="color"
-                                    value={getBarColor("riskLevel", risk, DEFAULT_RISK_PALETTE[risk])}
-                                    onChange={(e) => updateBarPalette("riskLevel", risk, e.target.value)}
-                                  />
-                                  <Input
-                                    value={getBarColor("riskLevel", risk, DEFAULT_RISK_PALETTE[risk])}
-                                    onChange={(e) => updateBarPalette("riskLevel", risk, e.target.value)}
-                                    className="h-8 w-[110px]"
-                                  />
-                                  <Button variant="outline" size="sm" onClick={() => clearBarPalette("riskLevel", risk)}>
-                                    Reset
-                                  </Button>
-                                </div>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-
-                        <div className="rounded-2xl border p-3">
-                          <div className="text-xs text-muted-foreground">Contract status palette</div>
-                          <div className="mt-2 space-y-2">
-                            {CONTRACT_STATUS_OPTIONS.map((status) => (
-                              <div key={status} className="flex items-center justify-between gap-2 rounded-xl border p-2">
-                                <div className="text-sm font-medium">{status}</div>
-                                <div className="flex items-center gap-2">
-                                  <input
-                                    type="color"
-                                    value={getBarColor("contractStatus", status, DEFAULT_CONTRACT_PALETTE[status])}
-                                    onChange={(e) => updateBarPalette("contractStatus", status, e.target.value)}
-                                  />
-                                  <Input
-                                    value={getBarColor("contractStatus", status, DEFAULT_CONTRACT_PALETTE[status])}
-                                    onChange={(e) => updateBarPalette("contractStatus", status, e.target.value)}
-                                    className="h-8 w-[110px]"
-                                  />
-                                  <Button variant="outline" size="sm" onClick={() => clearBarPalette("contractStatus", status)}>
-                                    Reset
-                                  </Button>
-                                </div>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      </div>
-                    </DialogContent>
-                  </Dialog>
                 </div>
 
                 <div className="grid gap-3 md:grid-cols-6">
@@ -4281,7 +4054,6 @@ export default function SupplierRiskOpsDashboard() {
                           <Bar
                             dataKey="suppliers"
                             name="Suppliers"
-                            fill={barPalette.riskMixSuppliers}
                             onClick={(d: any) =>
                               setBarInsight({
                                 title: "Risk mix (suppliers)",
@@ -6287,3 +6059,4 @@ function PlusIcon() {
     </svg>
   );
 }
+
