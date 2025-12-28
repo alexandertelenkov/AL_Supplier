@@ -5411,21 +5411,39 @@ export default function SupplierRiskOpsDashboard() {
                                         <div className="text-xs text-muted-foreground">Seen {c.count}Г—</div>
                                       </div>
                                       <div className="flex items-center gap-2">
-                                        <Button
-                                          variant="outline"
-                                          size="sm"
-                                          onClick={() =>
-                                            setDuplicateCandidateDetail({
-                                              code: selectedDuplicate.code,
-                                              name: c.name,
-                                              totalPO: stats?.totalPO ?? 0,
-                                              totalSpend: stats?.totalSpend ?? 0,
-                                              lastSeen: stats?.lastSeen ? String(stats.lastSeen) : "N/A",
-                                            })
-                                          }
-                                        >
-                                          Details
-                                        </Button>
+                                        <Dialog>
+                                          <DialogTrigger asChild>
+                                            <Button variant="outline" size="sm">
+                                              Details
+                                            </Button>
+                                          </DialogTrigger>
+                                          <DialogContent className="max-w-lg">
+                                            <DialogHeader>
+                                              <DialogTitle>Candidate details</DialogTitle>
+                                            </DialogHeader>
+                                            <div className="space-y-3 text-sm">
+                                              <div className="rounded-2xl border p-3">
+                                                <div className="text-xs text-muted-foreground">Supplier name</div>
+                                                <div className="text-lg font-semibold">{c.name}</div>
+                                                <div className="mt-1 text-xs text-muted-foreground">Supplier code: {selectedDuplicate.code}</div>
+                                              </div>
+                                              <div className="grid gap-2 md:grid-cols-3">
+                                                <div className="rounded-2xl border p-3">
+                                                  <div className="text-xs text-muted-foreground">PO count</div>
+                                                  <div className="text-lg font-semibold">{Math.round(stats?.totalPO ?? 0)}</div>
+                                                </div>
+                                                <div className="rounded-2xl border p-3">
+                                                  <div className="text-xs text-muted-foreground">SUM</div>
+                                                  <div className="text-lg font-semibold">{fmtMoney(stats?.totalSpend ?? 0)}</div>
+                                                </div>
+                                                <div className="rounded-2xl border p-3">
+                                                  <div className="text-xs text-muted-foreground">Date when</div>
+                                                  <div className="text-lg font-semibold">{stats?.lastSeen ? String(stats.lastSeen) : "N/A"}</div>
+                                                </div>
+                                              </div>
+                                            </div>
+                                          </DialogContent>
+                                        </Dialog>
                                         <Button variant="outline" size="sm" onClick={() => setCanonical(selectedDuplicate.code, c.name)}>
                                           Select
                                         </Button>
@@ -5446,41 +5464,6 @@ export default function SupplierRiskOpsDashboard() {
                   </CardContent>
                 </Card>
 
-                <Dialog
-                  open={!!duplicateCandidateDetail}
-                  onOpenChange={(open) => {
-                    if (!open) setDuplicateCandidateDetail(null);
-                  }}
-                >
-                  <DialogContent className="max-w-lg">
-                    <DialogHeader>
-                      <DialogTitle>Candidate details</DialogTitle>
-                    </DialogHeader>
-                    {duplicateCandidateDetail ? (
-                      <div className="space-y-3 text-sm">
-                        <div className="rounded-2xl border p-3">
-                          <div className="text-xs text-muted-foreground">Supplier name</div>
-                          <div className="text-lg font-semibold">{duplicateCandidateDetail.name}</div>
-                          <div className="mt-1 text-xs text-muted-foreground">Supplier code: {duplicateCandidateDetail.code}</div>
-                        </div>
-                        <div className="grid gap-2 md:grid-cols-3">
-                          <div className="rounded-2xl border p-3">
-                            <div className="text-xs text-muted-foreground">PO count</div>
-                            <div className="text-lg font-semibold">{Math.round(duplicateCandidateDetail.totalPO)}</div>
-                          </div>
-                          <div className="rounded-2xl border p-3">
-                            <div className="text-xs text-muted-foreground">SUM</div>
-                            <div className="text-lg font-semibold">{fmtMoney(duplicateCandidateDetail.totalSpend)}</div>
-                          </div>
-                          <div className="rounded-2xl border p-3">
-                            <div className="text-xs text-muted-foreground">Date when</div>
-                            <div className="text-lg font-semibold">{duplicateCandidateDetail.lastSeen ?? "N/A"}</div>
-                          </div>
-                        </div>
-                      </div>
-                    ) : null}
-                  </DialogContent>
-                </Dialog>
                 </>
               )
             ) : null}
