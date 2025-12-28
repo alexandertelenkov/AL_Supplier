@@ -210,6 +210,7 @@ type LogEntry = {
 type Task = {
   id: string;
   date: string; // YYYY-MM-DD
+  createdAt: string; // ISO
   owner: string;
   title: string;
   note?: string;
@@ -273,6 +274,18 @@ const DEFAULT_SETTINGS: AppSettings = {
   bulkContactName: "",
   bulkContactEmail: "",
 };
+
+const RISK_LEVELS: RiskLevel[] = ["High", "Non-risk", "Unknown"];
+const CONTRACT_STATUSES: ContractStatus[] = ["Not sent", "Sent", "Signed", "Review", "Not compliant", "N/A"];
+const BAR_PALETTE_FIELDS: { key: keyof AppSettings["barPalette"]; label: string }[] = [
+  { key: "funnel", label: "Funnel bars" },
+  { key: "funnelPending", label: "Funnel pending" },
+  { key: "categoryHighRisk", label: "Category high risk" },
+  { key: "categoryTotal", label: "Category total" },
+  { key: "categoryRiskShare", label: "Category risk share" },
+  { key: "riskMixSuppliers", label: "Risk mix suppliers" },
+  { key: "riskMixSpend", label: "Risk mix spend" },
+];
 
 const DEMO_FACT_ROWS: FactRow[] = [
   {
@@ -1331,6 +1344,16 @@ function fmtDate(d: string) {
   }
 }
 
+function todayIso() {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function addDays(dateStr: string, days: number) {
+  const d = new Date(`${dateStr}T00:00:00`);
+  d.setDate(d.getDate() + days);
+  return d.toISOString().slice(0, 10);
+}
+
 function shortLabel(label: string, max = 22) {
   if (label.length <= max) return label;
   return `${label.slice(0, max - 1)}…`;
@@ -1344,13 +1367,45 @@ function slugifyKey(value: string) {
 // UI components
 // -----------------------------
 
-function RiskBadge({ risk }: { risk: RiskLevel }) {
+function getReadableTextColor(hex: string) {
+  const sanitized = hex.replace("#", "");
+  if (sanitized.length !== 6) return "#0f172a";
+  const r = parseInt(sanitized.slice(0, 2), 16);
+  const g = parseInt(sanitized.slice(2, 4), 16);
+  const b = parseInt(sanitized.slice(4, 6), 16);
+  const luminance = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
+  return luminance > 0.65 ? "#0f172a" : "#f8fafc";
+}
+
+function RiskBadge({ risk, tone }: { risk: RiskLevel; tone?: string }) {
+  if (tone) {
+    return (
+      <Badge
+        variant="outline"
+        className="border"
+        style={{ backgroundColor: tone, borderColor: tone, color: getReadableTextColor(tone) }}
+      >
+        {risk === "High" ? "High risk" : risk}
+      </Badge>
+    );
+  }
   if (risk === "High") return <Badge variant="destructive">High risk</Badge>;
   if (risk === "Non-risk") return <Badge variant="secondary">Non-risk</Badge>;
   return <Badge variant="outline">Unknown</Badge>;
 }
 
-function ContractBadge({ status }: { status: ContractStatus }) {
+function ContractBadge({ status, tone }: { status: ContractStatus; tone?: string }) {
+  if (tone) {
+    return (
+      <Badge
+        variant="outline"
+        className="border"
+        style={{ backgroundColor: tone, borderColor: tone, color: getReadableTextColor(tone) }}
+      >
+        {status}
+      </Badge>
+    );
+  }
   if (status === "Signed") return <Badge variant="secondary">Signed</Badge>;
   if (status === "Sent") return <Badge variant="outline">Sent</Badge>;
   if (status === "Not compliant") return <Badge variant="destructive">Not compliant</Badge>;
@@ -1423,6 +1478,8 @@ export default function SupplierRiskOpsDashboard() {
   const [bulkEvaluated, setBulkEvaluated] = useState<EvaluationChoice>("Evaluated");
   const [bulkNameQuery, setBulkNameQuery] = useState("");
   const [bulkNameSelected, setBulkNameSelected] = useState<Set<string>>(new Set());
+  const [selectedDuplicateCode, setSelectedDuplicateCode] = useState<string | null>(null);
+  const [manualCanonicalName, setManualCanonicalName] = useState("");
 
   // category fast action (eligible-only) - uses spend dominance guardrail
   const [fastCategory, setFastCategory] = useState<string>("");
@@ -1456,6 +1513,8 @@ export default function SupplierRiskOpsDashboard() {
   const [categoryTableSortState, setCategoryTableSortState] = useState<{ key: string; dir: "asc" | "desc" }>({ key: "highRiskSuppliers", dir: "desc" });
   const [barInsight, setBarInsight] = useState<{ title: string; label: string; details: string[] } | null>(null);
   const [barAnalysis, setBarAnalysis] = useState<{ title: string; details: Record<string, any> } | null>(null);
+  const [bulkContactCode, setBulkContactCode] = useState("");
+  const [bulkContactEmail, setBulkContactEmail] = useState("");
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -1475,8 +1534,16 @@ export default function SupplierRiskOpsDashboard() {
     () => buildSupplierMaster(scopedFactRows, db.overrides, db.categoryRules, db.log, db.settings),
     [scopedFactRows, db.overrides, db.categoryRules, db.log, db.settings]
   );
+  const allSuppliers = useMemo(
+    () => buildSupplierMaster(db.factRows, db.overrides, db.categoryRules, db.log, db.settings),
+    [db.factRows, db.overrides, db.categoryRules, db.log, db.settings]
+  );
 
   const duplicates = useMemo(() => buildDuplicates(suppliers), [suppliers]);
+  const selectedDuplicate = useMemo(
+    () => (selectedDuplicateCode ? duplicates.find((d) => d.code === selectedDuplicateCode) ?? null : null),
+    [duplicates, selectedDuplicateCode]
+  );
   const issues = useMemo(
     () => buildIssues(scopedFactRows, suppliers, duplicates, db.settings, db.categoryRules),
     [scopedFactRows, suppliers, duplicates, db.settings, db.categoryRules]
@@ -1580,14 +1647,14 @@ export default function SupplierRiskOpsDashboard() {
   }, [categoryMetrics, categoryTableSort]);
 
   const overviewFactRows = useMemo(() => {
-    if (overviewScope === "Overall") return db.factRows;
-    return db.factRows.filter((r) => safeStr(r.country) === overviewScope);
-  }, [db.factRows, overviewScope]);
+    if (globalCountry === "Overall") return db.factRows;
+    return db.factRows.filter((r) => safeStr(r.country) === globalCountry);
+  }, [db.factRows, globalCountry]);
 
   const overviewSuppliers = useMemo(() => {
-    if (overviewScope === "Overall") return suppliers;
-    return suppliers.filter((s) => s.countries.includes(overviewScope));
-  }, [overviewScope, suppliers]);
+    if (globalCountry === "Overall") return suppliers;
+    return suppliers.filter((s) => s.countries.includes(globalCountry));
+  }, [globalCountry, suppliers]);
 
   const overviewSupplierByCode = useMemo(() => {
     const m = new Map<string, SupplierMaster>();
@@ -1619,6 +1686,12 @@ export default function SupplierRiskOpsDashboard() {
   }, [bulkNameQuery]);
 
   useEffect(() => {
+    if (selectedDuplicate) {
+      setManualCanonicalName(selectedDuplicate.current);
+    }
+  }, [selectedDuplicate]);
+
+  useEffect(() => {
     if (!availableCountries.includes(globalCountry)) {
       setGlobalCountry("Overall");
     }
@@ -1640,10 +1713,10 @@ export default function SupplierRiskOpsDashboard() {
   }, [suppliers, duplicates, issueBuckets, issues]);
 
   const overviewIssues = useMemo(() => {
-    if (overviewScope === "Overall") return issues;
+    if (globalCountry === "Overall") return issues;
     const codes = new Set(overviewSuppliers.map((s) => s.code));
-    return issues.filter((i) => (i.code ? codes.has(i.code) : false));
-  }, [issues, overviewScope, overviewSuppliers]);
+    return issues.filter((i) => (i.code ? codes.has(i.code) : true));
+  }, [issues, globalCountry, overviewSuppliers]);
 
   const overviewIssueBuckets = useMemo(() => {
     const by: Record<IssueType, number> = {
@@ -1676,13 +1749,13 @@ export default function SupplierRiskOpsDashboard() {
 
   const funnelData = useMemo(() => {
     const high = overviewSuppliers.filter((s) => s.risk === "High").length;
-    const signed = overviewSuppliers.filter((s) => s.contractStatus === "Signed").length;
+    const signedHigh = overviewSuppliers.filter((s) => s.risk === "High" && s.contractStatus === "Signed").length;
     const sent = overviewSuppliers.filter((s) => s.contractStatus === "Sent").length;
-    const pending = Math.max(high - signed, 0);
+    const pending = Math.max(high - signedHigh, 0);
     return [
       { stage: "High risk", value: high },
       { stage: "Sent", value: sent },
-      { stage: "Signed", value: signed },
+      { stage: "Signed", value: signedHigh },
       { stage: "Pending", value: pending },
     ];
   }, [overviewSuppliers]);
@@ -1745,6 +1818,19 @@ export default function SupplierRiskOpsDashboard() {
     for (const s of suppliers) m.set(s.code, s);
     return m;
   }, [suppliers]);
+
+  useEffect(() => {
+    const code = normCode(taskSupplierCode);
+    if (!code) return;
+    if (!taskSupplierName) {
+      const name = supplierByCode.get(code)?.canonicalName;
+      if (name) setTaskSupplierName(name);
+    }
+    if (!taskContactEmail) {
+      const contact = db.settings.supplierContacts?.[code];
+      if (contact) setTaskContactEmail(contact);
+    }
+  }, [taskSupplierCode, taskSupplierName, taskContactEmail, supplierByCode, db.settings.supplierContacts]);
   const bulkNameMatchesList = useMemo(() => {
     const needle = bulkNameQuery.trim().toLowerCase();
     if (!needle) return [];
@@ -1760,10 +1846,6 @@ export default function SupplierRiskOpsDashboard() {
     () => (bulkParsedCodes.length ? planBulkContract(bulkParsedCodes, bulkContract) : null),
     [bulkParsedCodes, bulkContract, supplierByCode, db.overrides]
   );
-  const bulkEvaluatedPreview = useMemo(
-    () => (bulkParsedCodes.length ? planBulkEvaluated(bulkParsedCodes, bulkEvaluated) : null),
-    [bulkParsedCodes, bulkEvaluated, supplierByCode, db.overrides]
-  );
   const bulkCanonicalPreview = useMemo(() => {
     const nm = safeStr(bulkCanonicalName);
     return bulkParsedCodes.length && nm ? planBulkCanonicalName(bulkParsedCodes, nm) : null;
@@ -1772,6 +1854,17 @@ export default function SupplierRiskOpsDashboard() {
     () => (bulkParsedCodes.length ? planBulkEvaluated(bulkParsedCodes, bulkEvaluated) : null),
     [bulkParsedCodes, bulkEvaluated, supplierByCode, db.overrides]
   );
+  const bulkPreviewRows = useMemo(() => {
+    return bulkParsedCodes.slice(0, 200).map((code) => {
+      const s = supplierByCode.get(code);
+      return {
+        code,
+        name: s?.canonicalName ?? "(not found)",
+        risk: s?.risk ?? "Unknown",
+        contract: s?.contractStatus ?? "Not sent",
+      };
+    });
+  }, [bulkParsedCodes, supplierByCode]);
 
   const categoryFastPreview = useMemo(() => {
     const cat = safeStr(fastCategory);
@@ -1885,14 +1978,6 @@ export default function SupplierRiskOpsDashboard() {
       .slice(0, 1500); // guardrail for UI
   }, [suppliers, q, riskFilter, evalFilter, contractFilter, categoryFilter]);
 
-  const bulkNameMatches = useMemo(() => {
-    const needle = bulkNameQuery.trim().toLowerCase();
-    if (!needle) return [];
-    return suppliers
-      .filter((s) => s.canonicalName.toLowerCase().includes(needle) || s.code.toLowerCase().includes(needle))
-      .slice(0, 300);
-  }, [bulkNameQuery, suppliers]);
-
   const worklist = useMemo(() => {
     // Fast Action list: High risk and not signed
     const base = suppliers.filter((s) => s.risk === "High" && s.contractStatus !== "Signed");
@@ -1905,118 +1990,7 @@ export default function SupplierRiskOpsDashboard() {
     return sorted.slice(0, 200);
   }, [suppliers, fastActionSort]);
 
-  const selectedSupplierList = useMemo(() => Array.from(selectedSupplierCodes), [selectedSupplierCodes]);
 
-  const toggleSupplierSelection = (code: string) => {
-    setSelectedSupplierCodes((prev) => {
-      const next = new Set(prev);
-      if (next.has(code)) next.delete(code);
-      else next.add(code);
-      return next;
-    });
-  };
-
-  const toggleAllSuppliersInView = (checked: boolean) => {
-    setSelectedSupplierCodes((prev) => {
-      const next = new Set(prev);
-      if (checked) {
-        supplierFiltered.forEach((s) => next.add(s.code));
-      } else {
-        supplierFiltered.forEach((s) => next.delete(s.code));
-      }
-      return next;
-    });
-  };
-
-  const clearSelectedSuppliers = () => setSelectedSupplierCodes(new Set());
-
-  const toggleBulkNameSelection = (code: string) => {
-    setBulkNameSelected((prev) => {
-      const next = new Set(prev);
-      if (next.has(code)) next.delete(code);
-      else next.add(code);
-      return next;
-    });
-  };
-
-  const clearBulkNameSelection = () => setBulkNameSelected(new Set());
-
-  const applySelectedBulkMark = () => {
-    if (!selectedSupplierList.length) return;
-    const riskPlan = planBulkRisk(selectedSupplierList, bulkRisk);
-    const evalPlan = planBulkEvaluated(selectedSupplierList, bulkEvaluated);
-    const didRisk = applyPlan(
-      "risk",
-      `Bulk risk ${bulkRisk === "Unknown" ? "cleared" : "set"}: ${bulkRisk} for ${riskPlan.changes.length} suppliers`,
-      riskPlan
-    );
-    const didEval = applyPlan(
-      "evaluated",
-      `Bulk evaluated ${bulkEvaluated === "Evaluated" ? "set" : "cleared"} for ${evalPlan.changes.length} suppliers`,
-      evalPlan
-    );
-
-    if (didRisk) {
-      pushLog({
-        type: "BULK_UPDATE",
-        summary: `Selection bulk risk ${bulkRisk === "Unknown" ? "cleared" : "set"}: ${bulkRisk} for ${riskPlan.changes.length} suppliers`,
-        details: {
-          action: "risk",
-          risk: bulkRisk,
-          changed: riskPlan.changes.length,
-          found: riskPlan.found.length,
-          notFound: riskPlan.notFound.length,
-          sample: riskPlan.changes.slice(0, 20).map((x) => x.code),
-        },
-      });
-    }
-
-    if (didEval) {
-      pushLog({
-        type: "BULK_UPDATE",
-        summary: `Selection bulk evaluated ${bulkEvaluated === "Evaluated" ? "set" : "cleared"} for ${evalPlan.changes.length} suppliers`,
-        details: {
-          action: "evaluated",
-          evaluated: bulkEvaluated,
-          changed: evalPlan.changes.length,
-          found: evalPlan.found.length,
-          notFound: evalPlan.notFound.length,
-          sample: evalPlan.changes.slice(0, 20).map((x) => x.code),
-        },
-      });
-    }
-  };
-
-  const applyBulkNameSelection = () => {
-    const codes = Array.from(bulkNameSelected);
-    if (!codes.length) return;
-    const riskPlan = planBulkRisk(codes, bulkRisk);
-    const evalPlan = planBulkEvaluated(codes, bulkEvaluated);
-    const didRisk = applyPlan(
-      "risk",
-      `Name search bulk risk ${bulkRisk === "Unknown" ? "cleared" : "set"}: ${bulkRisk} for ${riskPlan.changes.length} suppliers`,
-      riskPlan
-    );
-    const didEval = applyPlan(
-      "evaluated",
-      `Name search bulk evaluated ${bulkEvaluated === "Evaluated" ? "set" : "cleared"} for ${evalPlan.changes.length} suppliers`,
-      evalPlan
-    );
-
-    if (didRisk || didEval) {
-      pushLog({
-        type: "BULK_UPDATE",
-        summary: `Name search bulk update applied to ${codes.length} selected suppliers`,
-        details: {
-          risk: bulkRisk,
-          evaluated: bulkEvaluated,
-          riskChanged: riskPlan.changes.length,
-          evaluatedChanged: evalPlan.changes.length,
-          sample: codes.slice(0, 20),
-        },
-      });
-    }
-  };
 
   const pushBarAnalysis = (title: string, details: Record<string, any>) => {
     setBarAnalysis({ title, details });
@@ -2948,6 +2922,108 @@ export default function SupplierRiskOpsDashboard() {
     });
   }
 
+  useEffect(() => {
+    const today = todayIso();
+    const tasks = db.tasks;
+    const contactMap = db.settings.supplierContacts ?? {};
+    const byKey = new Map<string, Task>();
+    for (const t of tasks) {
+      if (t.kind === "contractFollowup" && t.supplierCode && t.stage) {
+        byKey.set(`${t.supplierCode}::${t.stage}`, t);
+      }
+    }
+    const signedCodes = new Set(allSuppliers.filter((s) => s.contractStatus === "Signed").map((s) => s.code));
+    const toAdd: Task[] = [];
+    const toUpdate: Task[] = [];
+
+    const makeTask = (
+      supplier: SupplierMaster,
+      stage: Task["stage"],
+      dueDate: string,
+      priority: Task["priority"],
+      title: string,
+      note?: string
+    ): Task => ({
+      id: uuid(),
+      date: dueDate,
+      dueDate,
+      createdAt: nowIso(),
+      owner: actor,
+      title,
+      note,
+      supplierCode: supplier.code,
+      supplierName: supplier.canonicalName,
+      contactEmail: contactMap[supplier.code],
+      kind: "contractFollowup",
+      stage,
+      priority,
+      status: "todo",
+    });
+
+    for (const supplier of allSuppliers) {
+      if (supplier.contractStatus === "Sent") {
+        const initialKey = `${supplier.code}::initial`;
+        if (!byKey.has(initialKey)) {
+          const dueDate = addDays(today, 14);
+          toAdd.push(
+            makeTask(
+              supplier,
+              "initial",
+              dueDate,
+              "normal",
+              `Contract signature expected: ${supplier.canonicalName}`,
+              "Auto: 14-day follow-up after first email."
+            )
+          );
+        }
+      }
+    }
+
+    for (const t of tasks) {
+      if (t.kind === "contractFollowup" && t.supplierCode && signedCodes.has(t.supplierCode) && t.status !== "done") {
+        toUpdate.push({ ...t, status: "done" });
+      }
+    }
+
+    for (const supplier of allSuppliers) {
+      if (supplier.contractStatus === "Signed") continue;
+      const initial = byKey.get(`${supplier.code}::initial`);
+      if (initial && (initial.dueDate ?? initial.date) < today && !byKey.has(`${supplier.code}::followup`)) {
+        const dueDate = addDays(today, 7);
+        toAdd.push(
+          makeTask(
+            supplier,
+            "followup",
+            dueDate,
+            "warning",
+            `Send reminder email: ${supplier.canonicalName}`,
+            "Auto: signature overdue. Ignore Risk until resolved. Reminder required (7 days)."
+          )
+        );
+      }
+      const followup = byKey.get(`${supplier.code}::followup`);
+      if (followup && (followup.dueDate ?? followup.date) < today && !byKey.has(`${supplier.code}::urgent`)) {
+        const dueDate = addDays(today, 1);
+        toAdd.push(
+          makeTask(
+            supplier,
+            "urgent",
+            dueDate,
+            "urgent",
+            `Urgent call required: ${supplier.canonicalName}`,
+            "Auto: second reminder overdue. Требуется срочный звонок."
+          )
+        );
+      }
+    }
+
+    if (!toAdd.length && !toUpdate.length) return;
+    setDB((prev) => {
+      const updated = prev.tasks.map((t) => toUpdate.find((u) => u.id === t.id) ?? t);
+      return { ...prev, tasks: [...toAdd, ...updated] };
+    });
+  }, [allSuppliers, db.settings.supplierContacts, db.tasks, actor]);
+
   const tasksByDate = useMemo(() => {
     const by: Record<string, Task[]> = {};
     for (const t of db.tasks) {
@@ -2956,6 +3032,10 @@ export default function SupplierRiskOpsDashboard() {
     }
     return by;
   }, [db.tasks]);
+  const redIgnoranceAlerts = useMemo(
+    () => db.tasks.filter((t) => t.kind === "contractFollowup" && t.stage === "urgent" && t.status !== "done"),
+    [db.tasks]
+  );
 
   const calendarDays = useMemo(() => {
     // basic month grid for current taskDate month
@@ -2986,6 +3066,15 @@ export default function SupplierRiskOpsDashboard() {
     }
     return cells;
   }, [taskDate]);
+
+  const pctOfTotal = (value: number) => (overviewKpis.total ? Math.round((value / overviewKpis.total) * 100) : 0);
+  const getFunnelColor = (stage: string) => {
+    if (stage === "High risk") return getRiskColor("High", barPalette.funnel);
+    if (stage === "Sent") return getContractColor("Sent", barPalette.funnel);
+    if (stage === "Signed") return getContractColor("Signed", barPalette.funnel);
+    if (stage === "Pending") return barPalette.funnelPending;
+    return barPalette.funnel;
+  };
 
   // -----------------------------
   // Render
@@ -3044,9 +3133,6 @@ export default function SupplierRiskOpsDashboard() {
 
             <Button variant="secondary" className="gap-2" onClick={() => fileInputRef.current?.click()}>
               <Upload className="h-4 w-4" /> Import XLSX/JSON
-            </Button>
-            <Button variant="outline" className="gap-2" onClick={loadDemoData}>
-              <Database className="h-4 w-4" /> Load demo data
             </Button>
             <Button variant="outline" className="gap-2" onClick={exportDB}>
               <Download className="h-4 w-4" /> Export DB
@@ -3396,31 +3482,363 @@ export default function SupplierRiskOpsDashboard() {
                     </CardContent>
                   </Card>
 
-                  <Card>
+                        <div className="rounded-2xl border p-3">
+                          <div className="text-xs text-muted-foreground">Palette rules</div>
+                          <Textarea
+                            value={barChartSettings.rulesNote ?? ""}
+                            onChange={(e) => setAppSettings({ barChartSettings: { rulesNote: e.target.value } })}
+                            placeholder="e.g. Use blue for volume, red for risk, and keep funnel stages consistent across teams."
+                            className="mt-2 min-h-[90px]"
+                          />
+                        </div>
+
+                        <div className="rounded-2xl border p-3">
+                          <div className="text-xs text-muted-foreground">Email automation rules</div>
+                          <div className="mt-2 grid gap-2">
+                            <div className="flex items-center justify-between gap-2">
+                              <div className="text-xs text-muted-foreground">Initial follow-up (days)</div>
+                              <Input
+                                type="number"
+                                value={emailAutomation.initialFollowUpDays}
+                                onChange={(e) =>
+                                  setAppSettings({
+                                    emailAutomation: {
+                                      ...emailAutomation,
+                                      initialFollowUpDays: Math.max(1, Number(e.target.value) || 1),
+                                    },
+                                  })
+                                }
+                                className="h-8 w-24"
+                              />
+                            </div>
+                            <div className="flex items-center justify-between gap-2">
+                              <div className="text-xs text-muted-foreground">Follow-up after reminder (days)</div>
+                              <Input
+                                type="number"
+                                value={emailAutomation.followUpDays}
+                                onChange={(e) =>
+                                  setAppSettings({
+                                    emailAutomation: {
+                                      ...emailAutomation,
+                                      followUpDays: Math.max(1, Number(e.target.value) || 1),
+                                    },
+                                  })
+                                }
+                                className="h-8 w-24"
+                              />
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="rounded-2xl border p-3">
+                          <div className="text-xs text-muted-foreground">Country palette</div>
+                          <div className="mt-2 space-y-2">
+                            {paletteCountries.map((country) => (
+                              <div key={country} className="flex items-center justify-between gap-2 rounded-xl border p-2">
+                                <div className="text-sm font-medium">{country}</div>
+                                <div className="flex items-center gap-2">
+                                  <input
+                                    type="color"
+                                    value={getBarColor("country", country, "#60a5fa")}
+                                    onChange={(e) => updateBarPalette("country", country, e.target.value)}
+                                  />
+                                  <Input
+                                    value={getBarColor("country", country, "#60a5fa")}
+                                    onChange={(e) => updateBarPalette("country", country, e.target.value)}
+                                    className="h-8 w-[110px]"
+                                  />
+                                  <Button variant="outline" size="sm" onClick={() => clearBarPalette("country", country)}>
+                                    Reset
+                                  </Button>
+                                </div>
+                              </div>
+                            ))}
+                            {paletteCountries.length === 0 ? (
+                              <div className="text-xs text-muted-foreground">No countries available yet. Import data first.</div>
+                            ) : null}
+                          </div>
+                        </div>
+
+                        <div className="rounded-2xl border p-3">
+                          <div className="text-xs text-muted-foreground">Category palette</div>
+                          <div className="mt-2 max-h-[260px] space-y-2 overflow-auto pr-1">
+                            {paletteCategories.map((category) => (
+                              <div key={category} className="flex items-center justify-between gap-2 rounded-xl border p-2">
+                                <div className="text-sm font-medium">{category}</div>
+                                <div className="flex items-center gap-2">
+                                  <input
+                                    type="color"
+                                    value={getBarColor("category", category, "#93c5fd")}
+                                    onChange={(e) => updateBarPalette("category", category, e.target.value)}
+                                  />
+                                  <Input
+                                    value={getBarColor("category", category, "#93c5fd")}
+                                    onChange={(e) => updateBarPalette("category", category, e.target.value)}
+                                    className="h-8 w-[110px]"
+                                  />
+                                  <Button variant="outline" size="sm" onClick={() => clearBarPalette("category", category)}>
+                                    Reset
+                                  </Button>
+                                </div>
+                              </div>
+                            ))}
+                            {paletteCategories.length === 0 ? (
+                              <div className="text-xs text-muted-foreground">No categories available yet. Import data first.</div>
+                            ) : null}
+                          </div>
+                        </div>
+
+                        <div className="rounded-2xl border p-3">
+                          <div className="text-xs text-muted-foreground">Funnel stages</div>
+                          <div className="mt-2 space-y-2">
+                            {funnelStages.map((stage) => (
+                              <div key={stage} className="flex items-center justify-between gap-2 rounded-xl border p-2">
+                                <div className="text-sm font-medium">{stage}</div>
+                                <div className="flex items-center gap-2">
+                                  <input
+                                    type="color"
+                                    value={getBarColor("funnelStage", stage, "#93c5fd")}
+                                    onChange={(e) => updateBarPalette("funnelStage", stage, e.target.value)}
+                                  />
+                                  <Input
+                                    value={getBarColor("funnelStage", stage, "#93c5fd")}
+                                    onChange={(e) => updateBarPalette("funnelStage", stage, e.target.value)}
+                                    className="h-8 w-[110px]"
+                                  />
+                                  <Button variant="outline" size="sm" onClick={() => clearBarPalette("funnelStage", stage)}>
+                                    Reset
+                                  </Button>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+
+                        <div className="rounded-2xl border p-3">
+                          <div className="text-xs text-muted-foreground">Risk level palette</div>
+                          <div className="mt-2 space-y-2">
+                            {RISK_LEVEL_OPTIONS.map((risk) => (
+                              <div key={risk} className="flex items-center justify-between gap-2 rounded-xl border p-2">
+                                <div className="text-sm font-medium">{risk}</div>
+                                <div className="flex items-center gap-2">
+                                  <input
+                                    type="color"
+                                    value={getBarColor("riskLevel", risk, DEFAULT_RISK_PALETTE[risk])}
+                                    onChange={(e) => updateBarPalette("riskLevel", risk, e.target.value)}
+                                  />
+                                  <Input
+                                    value={getBarColor("riskLevel", risk, DEFAULT_RISK_PALETTE[risk])}
+                                    onChange={(e) => updateBarPalette("riskLevel", risk, e.target.value)}
+                                    className="h-8 w-[110px]"
+                                  />
+                                  <Button variant="outline" size="sm" onClick={() => clearBarPalette("riskLevel", risk)}>
+                                    Reset
+                                  </Button>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+
+                        <div className="rounded-2xl border p-3">
+                          <div className="text-xs text-muted-foreground">Contract status palette</div>
+                          <div className="mt-2 space-y-2">
+                            {CONTRACT_STATUS_OPTIONS.map((status) => (
+                              <div key={status} className="flex items-center justify-between gap-2 rounded-xl border p-2">
+                                <div className="text-sm font-medium">{status}</div>
+                                <div className="flex items-center gap-2">
+                                  <input
+                                    type="color"
+                                    value={getBarColor("contractStatus", status, DEFAULT_CONTRACT_PALETTE[status])}
+                                    onChange={(e) => updateBarPalette("contractStatus", status, e.target.value)}
+                                  />
+                                  <Input
+                                    value={getBarColor("contractStatus", status, DEFAULT_CONTRACT_PALETTE[status])}
+                                    onChange={(e) => updateBarPalette("contractStatus", status, e.target.value)}
+                                    className="h-8 w-[110px]"
+                                  />
+                                  <Button variant="outline" size="sm" onClick={() => clearBarPalette("contractStatus", status)}>
+                                    Reset
+                                  </Button>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      </div>
+                    </DialogContent>
+                  </Dialog>
+                </div>
+
+                <div className="grid gap-3 md:grid-cols-6">
+                  <Card className="md:col-span-2">
                     <CardHeader className="pb-2">
                       <CardTitle className="flex items-center gap-2 text-base">
-                        <ShieldAlert className="h-4 w-4" /> High risk
+                        <Database className="h-4 w-4" /> Supplier base
                       </CardTitle>
                     </CardHeader>
                     <CardContent>
-                      <div className="text-3xl font-semibold">{overviewKpis.high}</div>
-                      <div className="mt-1 text-sm text-muted-foreground">Contract required</div>
+                      <div className="text-3xl font-semibold">{overviewKpis.total}</div>
+                      <div className="mt-1 text-sm text-muted-foreground">Unique supplier codes</div>
+                      <div className="mt-2 text-xs text-muted-foreground">
+                        Not evaluated: {overviewKpis.notEvalHighRisk} •{" "}
+                        {overviewKpis.high ? Math.round((overviewKpis.notEvalHighRisk / overviewKpis.high) * 100) : 0}% of High risk
+                      </div>
                     </CardContent>
                   </Card>
 
-                  <Card>
-                    <CardHeader className="pb-2">
-                      <CardTitle className="flex items-center gap-2 text-base">
-                        <CheckCircle2 className="h-4 w-4" /> Signed
-                      </CardTitle>
-                    </CardHeader>
-                    <CardContent>
-                      <div className="text-3xl font-semibold">{overviewKpis.signed}</div>
-                      <div className="mt-1 text-sm text-muted-foreground">Agreements signed</div>
-                    </CardContent>
-                  </Card>
+                        <div className="rounded-2xl border p-3">
+                          <div className="text-xs text-muted-foreground">Palette rules</div>
+                          <Textarea
+                            value={barChartSettings.rulesNote ?? ""}
+                            onChange={(e) => setAppSettings({ barChartSettings: { rulesNote: e.target.value } })}
+                            placeholder="e.g. Use blue for volume, red for risk, and keep funnel stages consistent across teams."
+                            className="mt-2 min-h-[90px]"
+                          />
+                        </div>
 
-                  <Card>
+                        <div className="rounded-2xl border p-3">
+                          <div className="text-xs text-muted-foreground">Country palette</div>
+                          <div className="mt-2 space-y-2">
+                            {paletteCountries.map((country) => (
+                              <div key={country} className="flex items-center justify-between gap-2 rounded-xl border p-2">
+                                <div className="text-sm font-medium">{country}</div>
+                                <div className="flex items-center gap-2">
+                                  <input
+                                    type="color"
+                                    value={getBarColor("country", country, "#60a5fa")}
+                                    onChange={(e) => updateBarPalette("country", country, e.target.value)}
+                                  />
+                                  <Input
+                                    value={getBarColor("country", country, "#60a5fa")}
+                                    onChange={(e) => updateBarPalette("country", country, e.target.value)}
+                                    className="h-8 w-[110px]"
+                                  />
+                                  <Button variant="outline" size="sm" onClick={() => clearBarPalette("country", country)}>
+                                    Reset
+                                  </Button>
+                                </div>
+                              </div>
+                            ))}
+                            {paletteCountries.length === 0 ? (
+                              <div className="text-xs text-muted-foreground">No countries available yet. Import data first.</div>
+                            ) : null}
+                          </div>
+                        </div>
+
+                        <div className="rounded-2xl border p-3">
+                          <div className="text-xs text-muted-foreground">Category palette</div>
+                          <div className="mt-2 max-h-[260px] space-y-2 overflow-auto pr-1">
+                            {paletteCategories.map((category) => (
+                              <div key={category} className="flex items-center justify-between gap-2 rounded-xl border p-2">
+                                <div className="text-sm font-medium">{category}</div>
+                                <div className="flex items-center gap-2">
+                                  <input
+                                    type="color"
+                                    value={getBarColor("category", category, "#93c5fd")}
+                                    onChange={(e) => updateBarPalette("category", category, e.target.value)}
+                                  />
+                                  <Input
+                                    value={getBarColor("category", category, "#93c5fd")}
+                                    onChange={(e) => updateBarPalette("category", category, e.target.value)}
+                                    className="h-8 w-[110px]"
+                                  />
+                                  <Button variant="outline" size="sm" onClick={() => clearBarPalette("category", category)}>
+                                    Reset
+                                  </Button>
+                                </div>
+                              </div>
+                            ))}
+                            {paletteCategories.length === 0 ? (
+                              <div className="text-xs text-muted-foreground">No categories available yet. Import data first.</div>
+                            ) : null}
+                          </div>
+                        </div>
+
+                        <div className="rounded-2xl border p-3">
+                          <div className="text-xs text-muted-foreground">Funnel stages</div>
+                          <div className="mt-2 space-y-2">
+                            {funnelStages.map((stage) => (
+                              <div key={stage} className="flex items-center justify-between gap-2 rounded-xl border p-2">
+                                <div className="text-sm font-medium">{stage}</div>
+                                <div className="flex items-center gap-2">
+                                  <input
+                                    type="color"
+                                    value={getBarColor("funnelStage", stage, "#93c5fd")}
+                                    onChange={(e) => updateBarPalette("funnelStage", stage, e.target.value)}
+                                  />
+                                  <Input
+                                    value={getBarColor("funnelStage", stage, "#93c5fd")}
+                                    onChange={(e) => updateBarPalette("funnelStage", stage, e.target.value)}
+                                    className="h-8 w-[110px]"
+                                  />
+                                  <Button variant="outline" size="sm" onClick={() => clearBarPalette("funnelStage", stage)}>
+                                    Reset
+                                  </Button>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+
+                        <div className="rounded-2xl border p-3">
+                          <div className="text-xs text-muted-foreground">Risk level palette</div>
+                          <div className="mt-2 space-y-2">
+                            {RISK_LEVEL_OPTIONS.map((risk) => (
+                              <div key={risk} className="flex items-center justify-between gap-2 rounded-xl border p-2">
+                                <div className="text-sm font-medium">{risk}</div>
+                                <div className="flex items-center gap-2">
+                                  <input
+                                    type="color"
+                                    value={getBarColor("riskLevel", risk, DEFAULT_RISK_PALETTE[risk])}
+                                    onChange={(e) => updateBarPalette("riskLevel", risk, e.target.value)}
+                                  />
+                                  <Input
+                                    value={getBarColor("riskLevel", risk, DEFAULT_RISK_PALETTE[risk])}
+                                    onChange={(e) => updateBarPalette("riskLevel", risk, e.target.value)}
+                                    className="h-8 w-[110px]"
+                                  />
+                                  <Button variant="outline" size="sm" onClick={() => clearBarPalette("riskLevel", risk)}>
+                                    Reset
+                                  </Button>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+
+                        <div className="rounded-2xl border p-3">
+                          <div className="text-xs text-muted-foreground">Contract status palette</div>
+                          <div className="mt-2 space-y-2">
+                            {CONTRACT_STATUS_OPTIONS.map((status) => (
+                              <div key={status} className="flex items-center justify-between gap-2 rounded-xl border p-2">
+                                <div className="text-sm font-medium">{status}</div>
+                                <div className="flex items-center gap-2">
+                                  <input
+                                    type="color"
+                                    value={getBarColor("contractStatus", status, DEFAULT_CONTRACT_PALETTE[status])}
+                                    onChange={(e) => updateBarPalette("contractStatus", status, e.target.value)}
+                                  />
+                                  <Input
+                                    value={getBarColor("contractStatus", status, DEFAULT_CONTRACT_PALETTE[status])}
+                                    onChange={(e) => updateBarPalette("contractStatus", status, e.target.value)}
+                                    className="h-8 w-[110px]"
+                                  />
+                                  <Button variant="outline" size="sm" onClick={() => clearBarPalette("contractStatus", status)}>
+                                    Reset
+                                  </Button>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      </div>
+                    </DialogContent>
+                  </Dialog>
+                </div>
+
+                <div className="grid gap-3 md:grid-cols-6">
+                  <Card className="md:col-span-2">
                     <CardHeader className="pb-2">
                       <CardTitle className="flex items-center gap-2 text-base">
                         <Split className="h-4 w-4" /> Quality alerts
@@ -3517,10 +3935,10 @@ export default function SupplierRiskOpsDashboard() {
                                   <div className="text-xs text-muted-foreground">{s.code}</div>
                                 </TableCell>
                                 <TableCell>
-                                  <RiskBadge risk={s.risk} />
+                                  <RiskBadge risk={s.risk} tone={getRiskColor(s.risk, DEFAULT_SETTINGS.statusPalette.risk[s.risk])} />
                                 </TableCell>
                                 <TableCell>
-                                  <ContractBadge status={s.contractStatus} />
+                                  <ContractBadge status={s.contractStatus} tone={getContractColor(s.contractStatus, DEFAULT_SETTINGS.statusPalette.contract[s.contractStatus])} />
                                 </TableCell>
                                 <TableCell className="text-right font-medium">{fmtMoney(s.totalSpend)}</TableCell>
                               </TableRow>
@@ -3557,7 +3975,7 @@ export default function SupplierRiskOpsDashboard() {
                         <BarChart
                           data={topRiskyByCount}
                           layout="vertical"
-                          margin={{ left: 60 }}
+                          margin={{ left: 120 }}
                         >
                           {renderBarDefs("category", topRiskyByCount.map((c) => c.category), "#93c5fd")}
                           <CartesianGrid strokeDasharray="3 3" />
@@ -3787,7 +4205,7 @@ export default function SupplierRiskOpsDashboard() {
                           <Bar
                             dataKey="suppliers"
                             name="Suppliers"
-                            fill="#e5e7eb"
+                            fill={barPalette.riskMixSuppliers}
                             onClick={(d: any) =>
                               setBarInsight({
                                 title: "Risk mix (suppliers)",
@@ -4099,10 +4517,10 @@ export default function SupplierRiskOpsDashboard() {
                                   <div className="text-xs text-muted-foreground">{s.code}</div>
                                 </TableCell>
                                 <TableCell>
-                                  <RiskBadge risk={s.risk} />
+                                  <RiskBadge risk={s.risk} tone={getRiskColor(s.risk, DEFAULT_SETTINGS.statusPalette.risk[s.risk])} />
                                 </TableCell>
                                 <TableCell>
-                                  <ContractBadge status={s.contractStatus} />
+                                  <ContractBadge status={s.contractStatus} tone={getContractColor(s.contractStatus, DEFAULT_SETTINGS.statusPalette.contract[s.contractStatus])} />
                                 </TableCell>
                                 <TableCell className="text-right">{Math.round(s.poInSlice)}</TableCell>
                                 <TableCell className="text-right font-medium">{fmtMoney(s.spendInSlice)}</TableCell>
@@ -4177,52 +4595,6 @@ export default function SupplierRiskOpsDashboard() {
                     </CardTitle>
                   </CardHeader>
                   <CardContent>
-                    <div className="mb-4 rounded-2xl border p-3">
-                      <div className="flex flex-wrap items-center justify-between gap-3">
-                        <div>
-                          <div className="text-sm font-medium">Bulk mark suppliers</div>
-                          <div className="text-xs text-muted-foreground">
-                            Selected: {selectedSuppliers.size} suppliers. Choose risk/evaluated and apply.
-                          </div>
-                        </div>
-                        <div className="flex flex-wrap gap-2">
-                          <Select value={bulkMarkRisk} onValueChange={(v: any) => setBulkMarkRisk(v)}>
-                            <SelectTrigger className="w-[180px]">
-                              <SelectValue placeholder="Risk" />
-                            </SelectTrigger>
-                            <SelectContent>
-                              <SelectItem value="No change">Risk: no change</SelectItem>
-                              <SelectItem value="High">Risk: High</SelectItem>
-                              <SelectItem value="Non-risk">Risk: Non-risk</SelectItem>
-                              <SelectItem value="Unknown">Risk: Unknown</SelectItem>
-                            </SelectContent>
-                          </Select>
-                          <Select value={bulkMarkEvaluated} onValueChange={(v: any) => setBulkMarkEvaluated(v)}>
-                            <SelectTrigger className="w-[200px]">
-                              <SelectValue placeholder="Evaluated" />
-                            </SelectTrigger>
-                            <SelectContent>
-                              <SelectItem value="No change">Evaluated: no change</SelectItem>
-                              <SelectItem value="Evaluated">Evaluated: Yes</SelectItem>
-                              <SelectItem value="Not evaluated">Evaluated: No</SelectItem>
-                              <SelectItem value="Clear">Evaluated: Clear override</SelectItem>
-                            </SelectContent>
-                          </Select>
-                          <Button
-                            variant="destructive"
-                            className="gap-2"
-                            onClick={bulkApplyMarkedSuppliers}
-                            disabled={selectedSuppliers.size === 0}
-                          >
-                            Set As
-                          </Button>
-                          <Button variant="outline" onClick={handleClearSelectedSuppliers}>
-                            Clear selection
-                          </Button>
-                        </div>
-                      </div>
-                    </div>
-
                     <div className="grid gap-2 md:grid-cols-5">
                       <div className="md:col-span-2">
                         <div className="relative">
@@ -4294,37 +4666,40 @@ export default function SupplierRiskOpsDashboard() {
                       <div>
                         <div className="text-sm font-medium">Bulk mark selection</div>
                         <div className="text-xs text-muted-foreground">
-                          Selected {selectedSupplierCodes.size} suppliers. Choose parameters and apply.
+                          Selected {selectedSuppliers.size} suppliers. Choose parameters and apply.
                         </div>
                       </div>
                       <div className="flex flex-wrap items-center gap-2">
-                        <Select value={bulkRisk} onValueChange={(v: any) => setBulkRisk(v)}>
+                        <Select value={bulkMarkRisk} onValueChange={(v: any) => setBulkMarkRisk(v)}>
                           <SelectTrigger className="w-[150px]">
                             <SelectValue placeholder="Risk" />
                           </SelectTrigger>
                           <SelectContent>
+                            <SelectItem value="No change">Risk: no change</SelectItem>
                             <SelectItem value="High">High</SelectItem>
                             <SelectItem value="Non-risk">Non-risk</SelectItem>
                             <SelectItem value="Unknown">Unknown</SelectItem>
                           </SelectContent>
                         </Select>
-                        <Select value={bulkEvaluated} onValueChange={(v: any) => setBulkEvaluated(v)}>
+                        <Select value={bulkMarkEvaluated} onValueChange={(v: any) => setBulkMarkEvaluated(v)}>
                           <SelectTrigger className="w-[170px]">
                             <SelectValue placeholder="Evaluated" />
                           </SelectTrigger>
                           <SelectContent>
-                            <SelectItem value="Evaluated">Evaluated</SelectItem>
-                            <SelectItem value="Not evaluated">Not evaluated</SelectItem>
+                            <SelectItem value="No change">Evaluated: no change</SelectItem>
+                            <SelectItem value="Evaluated">Evaluated: Yes</SelectItem>
+                            <SelectItem value="Not evaluated">Evaluated: No</SelectItem>
+                            <SelectItem value="Clear">Evaluated: Clear override</SelectItem>
                           </SelectContent>
                         </Select>
                         <Button
                           variant="destructive"
                           className="gap-2 bg-red-600 text-white hover:bg-red-700"
-                          onClick={applySelectedBulkMark}
+                          onClick={bulkApplyMarkedSuppliers}
                         >
                           Set As
                         </Button>
-                        <Button variant="outline" onClick={clearSelectedSuppliers}>
+                        <Button variant="outline" onClick={handleClearSelectedSuppliers}>
                           Clear
                         </Button>
                       </div>
@@ -4369,13 +4744,13 @@ export default function SupplierRiskOpsDashboard() {
                                 ) : null}
                               </TableCell>
                               <TableCell>
-                                <RiskBadge risk={s.risk} />
+                                <RiskBadge risk={s.risk} tone={getRiskColor(s.risk, DEFAULT_SETTINGS.statusPalette.risk[s.risk])} />
                               </TableCell>
                               <TableCell>
                                 {s.evaluated ? <Badge variant="secondary">Yes</Badge> : <Badge variant="outline">No</Badge>}
                               </TableCell>
                               <TableCell>
-                                <ContractBadge status={s.contractStatus} />
+                                <ContractBadge status={s.contractStatus} tone={getContractColor(s.contractStatus, DEFAULT_SETTINGS.statusPalette.contract[s.contractStatus])} />
                               </TableCell>
                               <TableCell className="min-w-[240px]">
                                 <div className="flex flex-wrap gap-1">
@@ -4560,7 +4935,7 @@ export default function SupplierRiskOpsDashboard() {
                                           <CardContent>
                                             <div className="grid gap-2 md:grid-cols-2">
                                               <div>
-                                                <div className="text-xs text-muted-foreground">Date</div>
+                                                <div className="text-xs text-muted-foreground">Resolve by</div>
                                                 <Input value={taskDate} onChange={(e) => setTaskDate(e.target.value)} type="date" />
                                               </div>
                                               <div>
@@ -4673,7 +5048,7 @@ export default function SupplierRiskOpsDashboard() {
                                 <div className="text-xs text-muted-foreground">{s.code}</div>
                               </TableCell>
                               <TableCell>
-                                <ContractBadge status={s.contractStatus} />
+                                <ContractBadge status={s.contractStatus} tone={getContractColor(s.contractStatus, DEFAULT_SETTINGS.statusPalette.contract[s.contractStatus])} />
                               </TableCell>
                               <TableCell className="text-right font-medium">{fmtMoney(s.totalSpend)}</TableCell>
                               <TableCell>
@@ -4689,6 +5064,8 @@ export default function SupplierRiskOpsDashboard() {
                                     size="sm"
                                     onClick={() => {
                                       setTaskSupplierCode(s.code);
+                                      setTaskSupplierName(s.canonicalName);
+                                      setTaskContactEmail(db.settings.supplierContacts?.[s.code] ?? "");
                                       setTaskTitle(`Chase signature: ${s.canonicalName}`);
                                       setActiveTab("calendar");
                                     }}
@@ -4728,7 +5105,7 @@ export default function SupplierRiskOpsDashboard() {
                           {renderBarDefs("category", riskyCategoryChart.map((c) => c.category), "#93c5fd")}
                           <CartesianGrid strokeDasharray="3 3" />
                           <XAxis type="number" tickFormatter={(v: any) => `${Math.round(Number(v) * 100)}%`} />
-                          <YAxis type="category" dataKey="category" width={180} />
+                          <YAxis type="category" dataKey="category" width={260} interval={0} />
                           <Tooltip formatter={(v: any) => `${Math.round(Number(v) * 100)}%`} />
                           <Bar dataKey="riskShare" name="Risk share">
                             {riskyCategoryChart.map((entry) => (
@@ -4965,7 +5342,7 @@ export default function SupplierRiskOpsDashboard() {
                               </TableCell>
                               <TableCell className="min-w-[260px]">{r.key}</TableCell>
                               <TableCell>
-                                <RiskBadge risk={r.defaultRisk} />
+                                <RiskBadge risk={r.defaultRisk} tone={getRiskColor(r.defaultRisk, DEFAULT_SETTINGS.statusPalette.risk[r.defaultRisk])} />
                               </TableCell>
                               <TableCell className="text-sm text-muted-foreground">{r.comment ?? ""}</TableCell>
                               <TableCell className="text-right">
@@ -5033,7 +5410,7 @@ export default function SupplierRiskOpsDashboard() {
                       <div>
                         <div className="text-sm font-medium">Issue inbox</div>
                         <div className="text-xs text-muted-foreground">
-                          Click a row to jump to supplier search. Use filters to focus your workstream.
+                          Click a row to inspect and resolve duplicates. Use filters to focus your workstream.
                         </div>
                       </div>
                       <div className="flex flex-wrap gap-2">
@@ -5087,11 +5464,13 @@ export default function SupplierRiskOpsDashboard() {
                             issuesFiltered.slice(0, 300).map((i) => (
                               <TableRow
                                 key={i.id}
-                                className="cursor-pointer"
+                                className={`cursor-pointer ${i.code && i.code === selectedDuplicateCode ? "bg-slate-50" : ""}`}
                                 onClick={() => {
-                                  const needle = i.code ?? i.supplierName ?? "";
-                                  setQ(needle);
-                                  setActiveTab("suppliers");
+                                  if (i.type === "CODE_MANY_NAMES") {
+                                    setSelectedDuplicateCode(i.code ?? null);
+                                  } else {
+                                    setSelectedDuplicateCode(null);
+                                  }
                                 }}
                               >
                                 <TableCell>
@@ -5132,23 +5511,86 @@ export default function SupplierRiskOpsDashboard() {
                     {duplicates.length === 0 ? (
                       <EmptyState title="No code→name duplicates" subtitle="Your Supplier Dictionary looks clean." />
                     ) : (
-                      <div className="space-y-3">
-                        {duplicates.map((d) => (
-                          <motion.div key={d.code} initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }}>
-                            <Card>
-                              <CardContent className="p-4">
-                                <div className="flex items-start justify-between gap-3">
-                                  <div>
-                                    <div className="text-sm text-muted-foreground">Supplier code</div>
-                                    <div className="text-lg font-semibold">{d.code}</div>
+                      <div className="space-y-4">
+                        {selectedDuplicate ? (
+                          <Card>
+                            <CardContent className="space-y-3 p-4">
+                              <div className="flex items-center justify-between">
+                                <div>
+                                  <div className="text-sm text-muted-foreground">Selected supplier code</div>
+                                  <div className="text-lg font-semibold">{selectedDuplicate.code}</div>
+                                </div>
+                                <Badge variant="outline">Candidates: {selectedDuplicate.candidates.length}</Badge>
+                              </div>
+                              <div className="grid gap-3 md:grid-cols-2">
+                                <div className="rounded-2xl border border-red-200 bg-red-50 p-3">
+                                  <div className="text-xs font-semibold text-red-600">Problem</div>
+                                  <div className="mt-1 text-sm">
+                                    Code has multiple names ({selectedDuplicate.candidates.length}).
                                   </div>
-                                  <div className="flex items-center gap-2">
-                                    <Badge variant="outline">Candidates: {d.candidates.length}</Badge>
-                                    <Button variant="secondary" onClick={() => setCanonical(d.code, d.recommended)}>
-                                      Use recommended
-                                    </Button>
+                                  <div className="mt-2 text-xs text-muted-foreground">
+                                    Current canonical: <span className="font-medium">{selectedDuplicate.current}</span>
                                   </div>
                                 </div>
+                                <div className="rounded-2xl border border-green-200 bg-green-50 p-3">
+                                  <div className="text-xs font-semibold text-green-600">Suggestion</div>
+                                  <div className="mt-1 text-sm">
+                                    Recommended canonical: <span className="font-medium">{selectedDuplicate.recommended}</span>
+                                  </div>
+                                  <Button
+                                    variant="secondary"
+                                    className="mt-2"
+                                    onClick={() => setCanonical(selectedDuplicate.code, selectedDuplicate.recommended)}
+                                  >
+                                    Apply recommendation
+                                  </Button>
+                                </div>
+                              </div>
+                              <div className="rounded-2xl border p-3">
+                                <div className="text-xs text-muted-foreground">Manual canonical name</div>
+                                <div className="mt-2 flex flex-wrap items-center gap-2">
+                                  <Input
+                                    value={manualCanonicalName}
+                                    onChange={(e) => setManualCanonicalName(e.target.value)}
+                                    placeholder="Type corrected canonical name"
+                                    className="w-full md:flex-1"
+                                  />
+                                  <Button
+                                    variant="outline"
+                                    onClick={() => setCanonical(selectedDuplicate.code, manualCanonicalName.trim())}
+                                    disabled={!manualCanonicalName.trim()}
+                                  >
+                                    Save
+                                  </Button>
+                                </div>
+                              </div>
+                              <div className="grid gap-2 md:grid-cols-2">
+                                {selectedDuplicate.candidates.map((c) => (
+                                  <div
+                                    key={c.name}
+                                    className={`flex items-center justify-between gap-2 rounded-2xl border p-3 ${
+                                      c.name === selectedDuplicate.recommended
+                                        ? "border-green-200 bg-green-50"
+                                        : "border-red-200 bg-red-50"
+                                    }`}
+                                  >
+                                    <div>
+                                      <div className="font-medium">{c.name}</div>
+                                      <div className="text-xs text-muted-foreground">Seen {c.count}×</div>
+                                    </div>
+                                    <Button variant="outline" size="sm" onClick={() => setCanonical(selectedDuplicate.code, c.name)}>
+                                      Select
+                                    </Button>
+                                  </div>
+                                ))}
+                              </div>
+                            </CardContent>
+                          </Card>
+                        ) : (
+                          <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-muted-foreground">
+                            Select a “Code → many names” issue to resolve it here.
+                          </div>
+                        )}
 
                                 <div className="mt-3 grid gap-2 md:grid-cols-2">
                                   {d.candidates.map((c) => (
@@ -5220,16 +5662,17 @@ export default function SupplierRiskOpsDashboard() {
                                         </Button>
                                       </div>
                                     </div>
-                                  ))}
-                                </div>
+                                  </div>
 
-                                <div className="mt-3 text-xs text-muted-foreground">
-                                  Current canonical: <span className="font-medium">{d.current}</span> • Recommended: <span className="font-medium">{d.recommended}</span>
-                                </div>
-                              </CardContent>
-                            </Card>
-                          </motion.div>
-                        ))}
+                                  <div className="mt-3 text-xs text-muted-foreground">
+                                    Current canonical: <span className="font-medium">{d.current}</span> • Recommended:{" "}
+                                    <span className="font-medium">{d.recommended}</span>
+                                  </div>
+                                </CardContent>
+                              </Card>
+                            </motion.div>
+                          ))}
+                        </div>
                       </div>
                     )}
                   </CardContent>
@@ -5247,11 +5690,6 @@ export default function SupplierRiskOpsDashboard() {
               </CardHeader>
               <CardContent className="space-y-4">
                 <div className="grid gap-3 md:grid-cols-2">
-                  <div>
-                    <div className="text-sm font-medium">Supplier codes</div>
-                    <div className="text-xs text-muted-foreground">Paste codes separated by newline, comma, semicolon, or space.</div>
-                    <Textarea value={bulkCodes} onChange={(e) => setBulkCodes(e.target.value)} placeholder="3302858\n3303076\nA324100_00" className="mt-2 min-h-[160px]" />
-                  </div>
                   <div className="space-y-3">
                     <Card>
                       <CardContent className="p-4">
@@ -5295,6 +5733,213 @@ export default function SupplierRiskOpsDashboard() {
                         </CardContent>
                       </Card>
                     ) : null}
+                    <Card>
+                      <CardContent className="p-4">
+                        <div className="text-sm font-medium">Supplier codes</div>
+                        <div className="text-xs text-muted-foreground">Paste codes separated by newline, comma, semicolon, or space.</div>
+                        <Textarea
+                          value={bulkCodes}
+                          onChange={(e) => setBulkCodes(e.target.value)}
+                          placeholder="3302858\n3303076\nA324100_00"
+                          className="mt-2 min-h-[160px]"
+                        />
+                      </CardContent>
+                    </Card>
+
+                    <Card>
+                      <CardContent className="p-4">
+                        <div className="flex items-center justify-between">
+                          <div>
+                            <div className="text-sm font-medium">Parsed supplier list</div>
+                            <div className="text-xs text-muted-foreground">
+                              {bulkParsedCodes.length ? `Showing ${bulkPreviewRows.length} of ${bulkParsedCodes.length}` : "Paste codes to preview."}
+                            </div>
+                          </div>
+                          <Badge variant="outline">{bulkParsedCodes.length} codes</Badge>
+                        </div>
+                        <div className="mt-3 max-h-[260px] overflow-auto rounded-xl border">
+                          <Table>
+                            <TableHeader>
+                              <TableRow>
+                                <TableHead>Supplier</TableHead>
+                                <TableHead>Code</TableHead>
+                                <TableHead>Risk</TableHead>
+                                <TableHead>Contract</TableHead>
+                              </TableRow>
+                            </TableHeader>
+                            <TableBody>
+                              {bulkPreviewRows.length === 0 ? (
+                                <TableRow>
+                                  <TableCell colSpan={4} className="py-6 text-center text-sm text-muted-foreground">
+                                    No codes parsed yet.
+                                  </TableCell>
+                                </TableRow>
+                              ) : (
+                                bulkPreviewRows.map((row) => (
+                                  <TableRow key={row.code}>
+                                    <TableCell className="min-w-[180px]">{row.name}</TableCell>
+                                    <TableCell className="text-xs text-muted-foreground">{row.code}</TableCell>
+                                    <TableCell>
+                                      <RiskBadge risk={row.risk as RiskLevel} tone={getRiskColor(row.risk as RiskLevel, DEFAULT_SETTINGS.statusPalette.risk[row.risk as RiskLevel])} />
+                                    </TableCell>
+                                    <TableCell>
+                                      <ContractBadge
+                                        status={row.contract as ContractStatus}
+                                        tone={getContractColor(row.contract as ContractStatus, DEFAULT_SETTINGS.statusPalette.contract[row.contract as ContractStatus])}
+                                      />
+                                    </TableCell>
+                                  </TableRow>
+                                ))
+                              )}
+                            </TableBody>
+                          </Table>
+                        </div>
+                      </CardContent>
+                    </Card>
+
+                    <Card>
+                      <CardContent className="p-4">
+                        <div className="text-sm font-medium">Find suppliers by name or code</div>
+                        <div className="text-xs text-muted-foreground">Type part of a name or code, then add matches into bulk list.</div>
+                        <Input
+                          value={bulkNameQuery}
+                          onChange={(e) => setBulkNameQuery(e.target.value)}
+                          placeholder="Search supplier name or code"
+                          className="mt-2"
+                        />
+                        {bulkNameMatchesList.length ? (
+                          <>
+                            <div className="mt-2 max-h-[220px] overflow-auto rounded-xl border">
+                              <Table>
+                                <TableHeader>
+                                  <TableRow>
+                                    <TableHead className="w-[40px]" />
+                                    <TableHead>Supplier</TableHead>
+                                    <TableHead>Code</TableHead>
+                                    <TableHead>Risk</TableHead>
+                                  </TableRow>
+                                </TableHeader>
+                                <TableBody>
+                                  {bulkNameMatchesList.map((s) => (
+                                    <TableRow key={s.code}>
+                                      <TableCell>
+                                        <input
+                                          type="checkbox"
+                                          checked={bulkNameSelected.has(s.code)}
+                                          onChange={() => handleToggleBulkNameSelection(s.code)}
+                                        />
+                                      </TableCell>
+                                      <TableCell className="font-medium">{s.canonicalName}</TableCell>
+                                      <TableCell className="text-xs text-muted-foreground">{s.code}</TableCell>
+                                      <TableCell>
+                                        <RiskBadge risk={s.risk} tone={getRiskColor(s.risk, DEFAULT_SETTINGS.statusPalette.risk[s.risk])} />
+                                      </TableCell>
+                                    </TableRow>
+                                  ))}
+                                </TableBody>
+                              </Table>
+                            </div>
+                            <div className="mt-2 flex justify-end">
+                              <Button variant="outline" onClick={handleApplyBulkNameSelection} disabled={bulkNameSelected.size === 0}>
+                                Add selected to bulk list
+                              </Button>
+                            </div>
+                          </>
+                        ) : (
+                          <div className="mt-2 text-xs text-muted-foreground">No matches yet. Start typing to search.</div>
+                        )}
+                      </CardContent>
+                    </Card>
+                  </div>
+
+                  <div className="space-y-3">
+                    <Card>
+                      <CardContent className="p-4">
+                        <div className="text-sm font-medium">Supplier code contact</div>
+                        <div className="text-xs text-muted-foreground">
+                          Default contact for bulk email outreach. Used when creating tasks from suppliers.
+                        </div>
+                        <div className="mt-3 grid gap-2 md:grid-cols-2">
+                          <div>
+                            <div className="text-xs text-muted-foreground">Contact name</div>
+                            <Input
+                              value={db.settings.bulkContactName}
+                              onChange={(e) => setAppSettings({ bulkContactName: e.target.value })}
+                              placeholder="Procurement contact"
+                            />
+                          </div>
+                          <div>
+                            <div className="text-xs text-muted-foreground">Contact email</div>
+                            <Input
+                              value={db.settings.bulkContactEmail}
+                              onChange={(e) => setAppSettings({ bulkContactEmail: e.target.value })}
+                              placeholder="name@company.com"
+                            />
+                          </div>
+                        </div>
+                      </CardContent>
+                    </Card>
+                    {db.lastUndo ? (
+                      <Card>
+                        <CardContent className="p-4">
+                          <div className="flex items-start justify-between gap-3">
+                            <div>
+                              <div className="text-sm font-medium">Undo last bulk action</div>
+                              <div className="text-xs text-muted-foreground">{db.lastUndo.summary}</div>
+                              <div className="mt-1 text-xs text-muted-foreground">Changed: {db.lastUndo.items.length}</div>
+                            </div>
+                            <Button variant="secondary" onClick={undoLast} className="gap-2">
+                              <Undo2 className="h-4 w-4" /> Undo
+                            </Button>
+                          </div>
+                        </CardContent>
+                      </Card>
+                    ) : null}
+
+                    <Card>
+                      <CardContent className="p-4">
+                        <div className="text-sm font-medium">Supplier code contact</div>
+                        <div className="text-xs text-muted-foreground">
+                          Save a global contact email per supplier code for quick task creation.
+                        </div>
+                        <div className="mt-3 grid gap-2 md:grid-cols-2">
+                          <Input
+                            value={bulkContactCode}
+                            onChange={(e) => setBulkContactCode(e.target.value)}
+                            placeholder="Supplier code"
+                          />
+                          <Input
+                            value={bulkContactEmail}
+                            onChange={(e) => setBulkContactEmail(e.target.value)}
+                            placeholder="Contact email"
+                          />
+                        </div>
+                        <div className="mt-3 flex justify-end">
+                          <Button
+                            variant="secondary"
+                            onClick={() => {
+                              upsertSupplierContact(bulkContactCode, bulkContactEmail);
+                              setBulkContactCode("");
+                              setBulkContactEmail("");
+                            }}
+                          >
+                            Save contact
+                          </Button>
+                        </div>
+                        {Object.keys(db.settings.supplierContacts ?? {}).length ? (
+                          <div className="mt-3 space-y-1 text-xs text-muted-foreground">
+                            {Object.entries(db.settings.supplierContacts ?? {}).slice(0, 5).map(([code, email]) => (
+                              <div key={code} className="flex items-center justify-between">
+                                <span className="font-medium">{code}</span>
+                                <span>{email}</span>
+                              </div>
+                            ))}
+                          </div>
+                        ) : (
+                          <div className="mt-3 text-xs text-muted-foreground">No contacts saved yet.</div>
+                        )}
+                      </CardContent>
+                    </Card>
                     <Card>
                       <CardContent className="p-4">
                         <div className="flex items-center justify-between">
@@ -5369,60 +6014,6 @@ export default function SupplierRiskOpsDashboard() {
                         <div className="flex items-center justify-between">
                           <div>
                             <div className="text-sm font-medium">Set evaluated status</div>
-                            <div className="text-xs text-muted-foreground">Manual evaluation override</div>
-                          </div>
-                          <Select value={bulkEvaluated} onValueChange={(v: any) => setBulkEvaluated(v)}>
-                            <SelectTrigger className="w-[200px]">
-                              <SelectValue />
-                            </SelectTrigger>
-                            <SelectContent>
-                              <SelectItem value="Evaluated">Evaluated</SelectItem>
-                              <SelectItem value="Not evaluated">Not evaluated</SelectItem>
-                            </SelectContent>
-                          </Select>
-                        </div>
-                        {bulkEvaluatedPreview ? (
-                          <div className="mt-2 text-xs text-muted-foreground">
-                            Found {bulkEvaluatedPreview.found.length} • Changes {bulkEvaluatedPreview.changes.length} • Not found {bulkEvaluatedPreview.notFound.length}
-                          </div>
-                        ) : (
-                          <div className="mt-2 text-xs text-muted-foreground">Paste codes to generate a change preview.</div>
-                        )}
-                        <div className="mt-3 flex justify-end">
-                          <Button className="gap-2" variant="secondary" onClick={() => bulkApplyEvaluated()}>
-                            <RefreshCw className="h-4 w-4" /> Apply
-                          </Button>
-                        </div>
-                      </CardContent>
-                    </Card>
-
-                    <Card>
-                      <CardContent className="p-4">
-                        <div>
-                          <div className="text-sm font-medium">Set canonical name</div>
-                          <div className="text-xs text-muted-foreground">Use this to unify name across the database.</div>
-                        </div>
-                        <Input value={bulkCanonicalName} onChange={(e) => setBulkCanonicalName(e.target.value)} placeholder="Canonical supplier name" className="mt-2" />
-                        {bulkCanonicalPreview ? (
-                          <div className="mt-2 text-xs text-muted-foreground">
-                            Found {bulkCanonicalPreview.found.length} • Changes {bulkCanonicalPreview.changes.length} • Not found {bulkCanonicalPreview.notFound.length}
-                          </div>
-                        ) : (
-                          <div className="mt-2 text-xs text-muted-foreground">Add a canonical name + codes to preview changes.</div>
-                        )}
-                        <div className="mt-3 flex justify-end">
-                          <Button className="gap-2" variant="outline" onClick={bulkApplyCanonicalName}>
-                            <RefreshCw className="h-4 w-4" /> Apply
-                          </Button>
-                        </div>
-                      </CardContent>
-                    </Card>
-
-                    <Card>
-                      <CardContent className="p-4">
-                        <div className="flex items-center justify-between">
-                          <div>
-                            <div className="text-sm font-medium">Set evaluated status</div>
                             <div className="text-xs text-muted-foreground">Override evaluation state.</div>
                           </div>
                           <Select value={bulkEvaluated} onValueChange={(v: any) => setBulkEvaluated(v)}>
@@ -5453,55 +6044,23 @@ export default function SupplierRiskOpsDashboard() {
 
                     <Card>
                       <CardContent className="p-4">
-                        <div className="text-sm font-medium">Find suppliers by name or code</div>
-                        <div className="text-xs text-muted-foreground">Type part of a name or code, then add matches into bulk list.</div>
-                        <Input
-                          value={bulkNameQuery}
-                          onChange={(e) => setBulkNameQuery(e.target.value)}
-                          placeholder="Search supplier name or code"
-                          className="mt-2"
-                        />
-                        {bulkNameMatchesList.length ? (
-                          <>
-                            <div className="mt-2 max-h-[220px] overflow-auto rounded-xl border">
-                              <Table>
-                                <TableHeader>
-                                  <TableRow>
-                                    <TableHead className="w-[40px]" />
-                                    <TableHead>Supplier</TableHead>
-                                    <TableHead>Code</TableHead>
-                                    <TableHead>Risk</TableHead>
-                                  </TableRow>
-                                </TableHeader>
-                                <TableBody>
-                                  {bulkNameMatchesList.map((s) => (
-                                    <TableRow key={s.code}>
-                                      <TableCell>
-                                        <input
-                                          type="checkbox"
-                                          checked={bulkNameSelected.has(s.code)}
-                                          onChange={() => handleToggleBulkNameSelection(s.code)}
-                                        />
-                                      </TableCell>
-                                      <TableCell className="font-medium">{s.canonicalName}</TableCell>
-                                      <TableCell className="text-xs text-muted-foreground">{s.code}</TableCell>
-                                      <TableCell>
-                                        <RiskBadge risk={s.risk} />
-                                      </TableCell>
-                                    </TableRow>
-                                  ))}
-                                </TableBody>
-                              </Table>
-                            </div>
-                            <div className="mt-2 flex justify-end">
-                              <Button variant="outline" onClick={handleApplyBulkNameSelection} disabled={bulkNameSelected.size === 0}>
-                                Add selected to bulk list
-                              </Button>
-                            </div>
-                          </>
+                        <div>
+                          <div className="text-sm font-medium">Set canonical name</div>
+                          <div className="text-xs text-muted-foreground">Use this to unify name across the database.</div>
+                        </div>
+                        <Input value={bulkCanonicalName} onChange={(e) => setBulkCanonicalName(e.target.value)} placeholder="Canonical supplier name" className="mt-2" />
+                        {bulkCanonicalPreview ? (
+                          <div className="mt-2 text-xs text-muted-foreground">
+                            Found {bulkCanonicalPreview.found.length} • Changes {bulkCanonicalPreview.changes.length} • Not found {bulkCanonicalPreview.notFound.length}
+                          </div>
                         ) : (
-                          <div className="mt-2 text-xs text-muted-foreground">No matches yet. Start typing to search.</div>
+                          <div className="mt-2 text-xs text-muted-foreground">Add a canonical name + codes to preview changes.</div>
                         )}
+                        <div className="mt-3 flex justify-end">
+                          <Button className="gap-2" variant="outline" onClick={bulkApplyCanonicalName}>
+                            <RefreshCw className="h-4 w-4" /> Apply
+                          </Button>
+                        </div>
                       </CardContent>
                     </Card>
 
@@ -5553,93 +6112,6 @@ export default function SupplierRiskOpsDashboard() {
                           </Button>
                           <Button className="gap-2" onClick={applyCategoryFastAction}>
                             <RefreshCw className="h-4 w-4" /> Apply
-                          </Button>
-                        </div>
-                      </CardContent>
-                    </Card>
-
-                    <Card>
-                      <CardContent className="p-4">
-                        <div className="text-sm font-medium">Search by name (partial match)</div>
-                        <div className="text-xs text-muted-foreground">Find suppliers by name or code, then bulk mark them.</div>
-                        <Input
-                          value={bulkNameQuery}
-                          onChange={(e) => setBulkNameQuery(e.target.value)}
-                          placeholder="Type supplier name or code fragment"
-                          className="mt-2"
-                        />
-                        <div className="mt-3 max-h-[220px] overflow-auto rounded-xl border">
-                          <Table>
-                            <TableHeader>
-                              <TableRow>
-                                <TableHead className="w-[48px] text-center"></TableHead>
-                                <TableHead>Supplier</TableHead>
-                                <TableHead>Risk</TableHead>
-                                <TableHead>Evaluated</TableHead>
-                              </TableRow>
-                            </TableHeader>
-                            <TableBody>
-                              {bulkNameMatches.length === 0 ? (
-                                <TableRow>
-                                  <TableCell colSpan={4} className="py-6 text-center text-sm text-muted-foreground">
-                                    Start typing to see matches.
-                                  </TableCell>
-                                </TableRow>
-                              ) : (
-                                bulkNameMatches.map((s) => (
-                                  <TableRow key={s.code}>
-                                    <TableCell className="text-center">
-                                      <input
-                                        type="checkbox"
-                                        checked={bulkNameSelected.has(s.code)}
-                                        onChange={() => toggleBulkNameSelection(s.code)}
-                                      />
-                                    </TableCell>
-                                    <TableCell>
-                                      <div className="font-medium">{s.canonicalName}</div>
-                                      <div className="text-xs text-muted-foreground">{s.code}</div>
-                                    </TableCell>
-                                    <TableCell>
-                                      <RiskBadge risk={s.risk} />
-                                    </TableCell>
-                                    <TableCell>
-                                      {s.evaluated ? <Badge variant="secondary">Yes</Badge> : <Badge variant="outline">No</Badge>}
-                                    </TableCell>
-                                  </TableRow>
-                                ))
-                              )}
-                            </TableBody>
-                          </Table>
-                        </div>
-                        <div className="mt-3 flex flex-wrap items-center gap-2">
-                          <Select value={bulkRisk} onValueChange={(v: any) => setBulkRisk(v)}>
-                            <SelectTrigger className="w-[150px]">
-                              <SelectValue placeholder="Risk" />
-                            </SelectTrigger>
-                            <SelectContent>
-                              <SelectItem value="High">High</SelectItem>
-                              <SelectItem value="Non-risk">Non-risk</SelectItem>
-                              <SelectItem value="Unknown">Unknown</SelectItem>
-                            </SelectContent>
-                          </Select>
-                          <Select value={bulkEvaluated} onValueChange={(v: any) => setBulkEvaluated(v)}>
-                            <SelectTrigger className="w-[180px]">
-                              <SelectValue placeholder="Evaluated" />
-                            </SelectTrigger>
-                            <SelectContent>
-                              <SelectItem value="Evaluated">Evaluated</SelectItem>
-                              <SelectItem value="Not evaluated">Not evaluated</SelectItem>
-                            </SelectContent>
-                          </Select>
-                          <Button
-                            className="gap-2"
-                            variant="destructive"
-                            onClick={applyBulkNameSelection}
-                          >
-                            Set As
-                          </Button>
-                          <Button variant="outline" onClick={clearBulkNameSelection}>
-                            Clear selection
                           </Button>
                         </div>
                       </CardContent>
@@ -5714,7 +6186,7 @@ export default function SupplierRiskOpsDashboard() {
                 <CardContent className="space-y-3">
                   <div className="grid gap-2 md:grid-cols-2">
                     <div>
-                      <div className="text-xs text-muted-foreground">Date</div>
+                      <div className="text-xs text-muted-foreground">Resolve by</div>
                       <Input value={taskDate} onChange={(e) => setTaskDate(e.target.value)} type="date" />
                     </div>
                     <div>
@@ -5761,10 +6233,30 @@ export default function SupplierRiskOpsDashboard() {
                     <Textarea value={taskNote} onChange={(e) => setTaskNote(e.target.value)} placeholder="What was done, what is blocked, next step, by whom…" />
                   </div>
                   <div className="flex justify-end">
-                    <Button className="gap-2" onClick={addTask}>
+                    <Button className="gap-2" onClick={() => addTask()}>
                       <PlusIcon /> Add
                     </Button>
                   </div>
+
+                  {redIgnoranceAlerts.length ? (
+                    <>
+                      <Separator />
+                      <div className="rounded-2xl border border-red-200 bg-red-50 p-3">
+                        <div className="text-sm font-medium text-red-700">Red Ignorance Alert</div>
+                        <div className="text-xs text-red-700/80">
+                          Suppliers requiring urgent contact after two unanswered reminders.
+                        </div>
+                        <div className="mt-2 space-y-1 text-xs">
+                          {redIgnoranceAlerts.slice(0, 6).map((t) => (
+                            <div key={t.id} className="flex items-center justify-between">
+                              <span className="font-medium">{t.supplierName ?? t.supplierCode ?? "Supplier"}</span>
+                              <span>Due {t.dueDate ?? t.date}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    </>
+                  ) : null}
 
                   <Separator />
 
