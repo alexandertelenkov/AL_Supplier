@@ -1822,6 +1822,13 @@ export default function SupplierRiskOpsDashboard() {
   const [bulkNameQuery, setBulkNameQuery] = useState("");
   const [bulkNameSelected, setBulkNameSelected] = useState<Set<string>>(new Set());
   const [selectedDuplicateCode, setSelectedDuplicateCode] = useState<string | null>(null);
+  const [duplicateCandidateDetail, setDuplicateCandidateDetail] = useState<{
+    code: string;
+    name: string;
+    totalPO: number;
+    totalSpend: number;
+    lastSeen?: string;
+  } | null>(null);
   const [manualCanonicalName, setManualCanonicalName] = useState("");
 
   // category fast action (eligible-only) - uses spend dominance guardrail
