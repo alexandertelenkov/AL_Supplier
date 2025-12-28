@@ -1611,8 +1611,6 @@ export default function SupplierRiskOpsDashboard() {
     }
     return map;
   }, [db.factRows]);
-  const bulkContactName = db.settings.bulkContactName;
-  const bulkContactEmail = db.settings.bulkContactEmail;
   const emailAutomation = db.settings.emailAutomation;
 
   const redIgnoranceAlerts = useMemo(() => {
@@ -2848,8 +2846,8 @@ export default function SupplierRiskOpsDashboard() {
       note: taskNote,
       supplierCode: taskSupplierCode,
       supplierName: taskSupplierName,
-      contactName: taskContactName || bulkContactName,
-      contactEmail: taskContactEmail || bulkContactEmail,
+      contactName: taskContactName || db.settings.bulkContactName,
+      contactEmail: taskContactEmail || db.settings.bulkContactEmail,
       dueDate: taskDueDate,
       kind: "general",
     });
@@ -2891,8 +2889,8 @@ export default function SupplierRiskOpsDashboard() {
       followUpStage: options.stage,
       supplierCode: options.supplierCode,
       supplierName: options.supplierName,
-      contactName: options.contactName || bulkContactName,
-      contactEmail: options.contactEmail || bulkContactEmail,
+      contactName: options.contactName || db.settings.bulkContactName,
+      contactEmail: options.contactEmail || db.settings.bulkContactEmail,
       note:
         options.stage === "initial"
           ? `Email sent — reminder scheduled for ${initialDays} days.`
@@ -3695,6 +3693,44 @@ export default function SupplierRiskOpsDashboard() {
                             placeholder="e.g. Use blue for volume, red for risk, and keep funnel stages consistent across teams."
                             className="mt-2 min-h-[90px]"
                           />
+                        </div>
+
+                        <div className="rounded-2xl border p-3">
+                          <div className="text-xs text-muted-foreground">Email automation rules</div>
+                          <div className="mt-2 grid gap-2">
+                            <div className="flex items-center justify-between gap-2">
+                              <div className="text-xs text-muted-foreground">Initial follow-up (days)</div>
+                              <Input
+                                type="number"
+                                value={emailAutomation.initialFollowUpDays}
+                                onChange={(e) =>
+                                  setAppSettings({
+                                    emailAutomation: {
+                                      ...emailAutomation,
+                                      initialFollowUpDays: Math.max(1, Number(e.target.value) || 1),
+                                    },
+                                  })
+                                }
+                                className="h-8 w-24"
+                              />
+                            </div>
+                            <div className="flex items-center justify-between gap-2">
+                              <div className="text-xs text-muted-foreground">Follow-up after reminder (days)</div>
+                              <Input
+                                type="number"
+                                value={emailAutomation.followUpDays}
+                                onChange={(e) =>
+                                  setAppSettings({
+                                    emailAutomation: {
+                                      ...emailAutomation,
+                                      followUpDays: Math.max(1, Number(e.target.value) || 1),
+                                    },
+                                  })
+                                }
+                                className="h-8 w-24"
+                              />
+                            </div>
+                          </div>
                         </div>
 
                         <div className="rounded-2xl border p-3">
@@ -4949,7 +4985,7 @@ export default function SupplierRiskOpsDashboard() {
                                                 <Input
                                                   value={taskContactName}
                                                   onChange={(e) => setTaskContactName(e.target.value)}
-                                                  placeholder={bulkContactName || "Procurement contact"}
+                                                  placeholder={db.settings.bulkContactName || "Procurement contact"}
                                                 />
                                               </div>
                                               <div>
@@ -4957,7 +4993,7 @@ export default function SupplierRiskOpsDashboard() {
                                                 <Input
                                                   value={taskContactEmail}
                                                   onChange={(e) => setTaskContactEmail(e.target.value)}
-                                                  placeholder={bulkContactEmail || "name@company.com"}
+                                                  placeholder={db.settings.bulkContactEmail || "name@company.com"}
                                                 />
                                               </div>
                                             </div>
@@ -4983,8 +5019,8 @@ export default function SupplierRiskOpsDashboard() {
                                                   scheduleEmailFollowUp({
                                                     supplierCode: s.code,
                                                     supplierName: s.canonicalName,
-                                                    contactName: taskContactName || bulkContactName,
-                                                    contactEmail: taskContactEmail || bulkContactEmail,
+                                                    contactName: taskContactName || db.settings.bulkContactName,
+                                                    contactEmail: taskContactEmail || db.settings.bulkContactEmail,
                                                     stage: "initial",
                                                   });
                                                 }}
@@ -5733,168 +5769,6 @@ export default function SupplierRiskOpsDashboard() {
                         </CardContent>
                       </Card>
                     ) : null}
-                    <Card>
-                      <CardContent className="p-4">
-                        <div className="text-sm font-medium">Supplier codes</div>
-                        <div className="text-xs text-muted-foreground">Paste codes separated by newline, comma, semicolon, or space.</div>
-                        <Textarea
-                          value={bulkCodes}
-                          onChange={(e) => setBulkCodes(e.target.value)}
-                          placeholder="3302858\n3303076\nA324100_00"
-                          className="mt-2 min-h-[160px]"
-                        />
-                      </CardContent>
-                    </Card>
-
-                    <Card>
-                      <CardContent className="p-4">
-                        <div className="flex items-center justify-between">
-                          <div>
-                            <div className="text-sm font-medium">Parsed supplier list</div>
-                            <div className="text-xs text-muted-foreground">
-                              {bulkParsedCodes.length ? `Showing ${bulkPreviewRows.length} of ${bulkParsedCodes.length}` : "Paste codes to preview."}
-                            </div>
-                          </div>
-                          <Badge variant="outline">{bulkParsedCodes.length} codes</Badge>
-                        </div>
-                        <div className="mt-3 max-h-[260px] overflow-auto rounded-xl border">
-                          <Table>
-                            <TableHeader>
-                              <TableRow>
-                                <TableHead>Supplier</TableHead>
-                                <TableHead>Code</TableHead>
-                                <TableHead>Risk</TableHead>
-                                <TableHead>Contract</TableHead>
-                              </TableRow>
-                            </TableHeader>
-                            <TableBody>
-                              {bulkPreviewRows.length === 0 ? (
-                                <TableRow>
-                                  <TableCell colSpan={4} className="py-6 text-center text-sm text-muted-foreground">
-                                    No codes parsed yet.
-                                  </TableCell>
-                                </TableRow>
-                              ) : (
-                                bulkPreviewRows.map((row) => (
-                                  <TableRow key={row.code}>
-                                    <TableCell className="min-w-[180px]">{row.name}</TableCell>
-                                    <TableCell className="text-xs text-muted-foreground">{row.code}</TableCell>
-                                    <TableCell>
-                                      <RiskBadge risk={row.risk as RiskLevel} tone={getRiskColor(row.risk as RiskLevel, DEFAULT_SETTINGS.statusPalette.risk[row.risk as RiskLevel])} />
-                                    </TableCell>
-                                    <TableCell>
-                                      <ContractBadge
-                                        status={row.contract as ContractStatus}
-                                        tone={getContractColor(row.contract as ContractStatus, DEFAULT_SETTINGS.statusPalette.contract[row.contract as ContractStatus])}
-                                      />
-                                    </TableCell>
-                                  </TableRow>
-                                ))
-                              )}
-                            </TableBody>
-                          </Table>
-                        </div>
-                      </CardContent>
-                    </Card>
-
-                    <Card>
-                      <CardContent className="p-4">
-                        <div className="text-sm font-medium">Find suppliers by name or code</div>
-                        <div className="text-xs text-muted-foreground">Type part of a name or code, then add matches into bulk list.</div>
-                        <Input
-                          value={bulkNameQuery}
-                          onChange={(e) => setBulkNameQuery(e.target.value)}
-                          placeholder="Search supplier name or code"
-                          className="mt-2"
-                        />
-                        {bulkNameMatchesList.length ? (
-                          <>
-                            <div className="mt-2 max-h-[220px] overflow-auto rounded-xl border">
-                              <Table>
-                                <TableHeader>
-                                  <TableRow>
-                                    <TableHead className="w-[40px]" />
-                                    <TableHead>Supplier</TableHead>
-                                    <TableHead>Code</TableHead>
-                                    <TableHead>Risk</TableHead>
-                                  </TableRow>
-                                </TableHeader>
-                                <TableBody>
-                                  {bulkNameMatchesList.map((s) => (
-                                    <TableRow key={s.code}>
-                                      <TableCell>
-                                        <input
-                                          type="checkbox"
-                                          checked={bulkNameSelected.has(s.code)}
-                                          onChange={() => handleToggleBulkNameSelection(s.code)}
-                                        />
-                                      </TableCell>
-                                      <TableCell className="font-medium">{s.canonicalName}</TableCell>
-                                      <TableCell className="text-xs text-muted-foreground">{s.code}</TableCell>
-                                      <TableCell>
-                                        <RiskBadge risk={s.risk} tone={getRiskColor(s.risk, DEFAULT_SETTINGS.statusPalette.risk[s.risk])} />
-                                      </TableCell>
-                                    </TableRow>
-                                  ))}
-                                </TableBody>
-                              </Table>
-                            </div>
-                            <div className="mt-2 flex justify-end">
-                              <Button variant="outline" onClick={handleApplyBulkNameSelection} disabled={bulkNameSelected.size === 0}>
-                                Add selected to bulk list
-                              </Button>
-                            </div>
-                          </>
-                        ) : (
-                          <div className="mt-2 text-xs text-muted-foreground">No matches yet. Start typing to search.</div>
-                        )}
-                      </CardContent>
-                    </Card>
-                  </div>
-
-                  <div className="space-y-3">
-                    <Card>
-                      <CardContent className="p-4">
-                        <div className="text-sm font-medium">Supplier code contact</div>
-                        <div className="text-xs text-muted-foreground">
-                          Default contact for bulk email outreach. Used when creating tasks from suppliers.
-                        </div>
-                        <div className="mt-3 grid gap-2 md:grid-cols-2">
-                          <div>
-                            <div className="text-xs text-muted-foreground">Contact name</div>
-                            <Input
-                              value={db.settings.bulkContactName}
-                              onChange={(e) => setAppSettings({ bulkContactName: e.target.value })}
-                              placeholder="Procurement contact"
-                            />
-                          </div>
-                          <div>
-                            <div className="text-xs text-muted-foreground">Contact email</div>
-                            <Input
-                              value={db.settings.bulkContactEmail}
-                              onChange={(e) => setAppSettings({ bulkContactEmail: e.target.value })}
-                              placeholder="name@company.com"
-                            />
-                          </div>
-                        </div>
-                      </CardContent>
-                    </Card>
-                    {db.lastUndo ? (
-                      <Card>
-                        <CardContent className="p-4">
-                          <div className="flex items-start justify-between gap-3">
-                            <div>
-                              <div className="text-sm font-medium">Undo last bulk action</div>
-                              <div className="text-xs text-muted-foreground">{db.lastUndo.summary}</div>
-                              <div className="mt-1 text-xs text-muted-foreground">Changed: {db.lastUndo.items.length}</div>
-                            </div>
-                            <Button variant="secondary" onClick={undoLast} className="gap-2">
-                              <Undo2 className="h-4 w-4" /> Undo
-                            </Button>
-                          </div>
-                        </CardContent>
-                      </Card>
-                    ) : null}
 
                     <Card>
                       <CardContent className="p-4">
@@ -6208,7 +6082,7 @@ export default function SupplierRiskOpsDashboard() {
                       <Input
                         value={taskContactName}
                         onChange={(e) => setTaskContactName(e.target.value)}
-                        placeholder={bulkContactName || "Procurement contact"}
+                        placeholder={db.settings.bulkContactName || "Procurement contact"}
                       />
                     </div>
                     <div>
@@ -6216,7 +6090,7 @@ export default function SupplierRiskOpsDashboard() {
                       <Input
                         value={taskContactEmail}
                         onChange={(e) => setTaskContactEmail(e.target.value)}
-                        placeholder={bulkContactEmail || "name@company.com"}
+                        placeholder={db.settings.bulkContactEmail || "name@company.com"}
                       />
                     </div>
                   </div>
