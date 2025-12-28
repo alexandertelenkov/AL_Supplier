@@ -1454,7 +1454,6 @@ export default function SupplierRiskOpsDashboard() {
   const [actor, setActor] = useState("Hero");
   const [activeTab, setActiveTab] = useState("overview");
   const [globalCountry, setGlobalCountry] = useState("Overall");
-  const [overviewScope, setOverviewScope] = useState("Overall");
 
   // filters
   const [q, setQ] = useState("");
@@ -1489,6 +1488,13 @@ export default function SupplierRiskOpsDashboard() {
   const [bulkNameQuery, setBulkNameQuery] = useState("");
   const [bulkNameSelected, setBulkNameSelected] = useState<Set<string>>(new Set());
   const [selectedDuplicateCode, setSelectedDuplicateCode] = useState<string | null>(null);
+  const [duplicateCandidateDetail, setDuplicateCandidateDetail] = useState<{
+    code: string;
+    name: string;
+    totalPO: number;
+    totalSpend: number;
+    lastSeen?: string;
+  } | null>(null);
   const [manualCanonicalName, setManualCanonicalName] = useState("");
 
   // category fast action (eligible-only) - uses spend dominance guardrail
@@ -1523,8 +1529,7 @@ export default function SupplierRiskOpsDashboard() {
   const [categoryTableSortState, setCategoryTableSortState] = useState<{ key: string; dir: "asc" | "desc" }>({ key: "highRiskSuppliers", dir: "desc" });
   const [barInsight, setBarInsight] = useState<{ title: string; label: string; details: string[] } | null>(null);
   const [barAnalysis, setBarAnalysis] = useState<{ title: string; details: Record<string, any> } | null>(null);
-  const [bulkContactCode, setBulkContactCode] = useState("");
-  const [bulkContactEmail, setBulkContactEmail] = useState("");
+  const [bulkContactEntries, setBulkContactEntries] = useState("");
 
  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -1606,8 +1611,6 @@ export default function SupplierRiskOpsDashboard() {
   const countryMetrics = useMemo(() => buildCountryMetrics(scopedFactRows, suppliers), [scopedFactRows, suppliers]);
   const barChartSettings = db.settings.barChartSettings;
   const categories = useMemo(() => ["All", ...uniq(categoryMetrics.map((c) => c.category)).sort()], [categoryMetrics]);
-  const paletteCountries = useMemo(() => availableCountries.filter((c) => c !== "Overall"), [availableCountries]);
-  const paletteCategories = useMemo(() => categories.filter((c) => c !== "All"), [categories]);
   const riskyCategoryChart = useMemo(
     () =>
       [...categoryMetrics]
@@ -1850,6 +1853,25 @@ export default function SupplierRiskOpsDashboard() {
     for (const s of suppliers) m.set(s.code, s);
     return m;
   }, [suppliers]);
+
+  const duplicateCandidateStats = useMemo(() => {
+    const map = new Map<string, { totalPO: number; totalSpend: number; lastSeen?: number }>();
+    for (const row of db.factRows) {
+      const code = normCode(row.supplierCode);
+      const name = safeStr(row.supplierName);
+      if (!code || !name) continue;
+      const key = getCandidateKey(code, name);
+      const entry = map.get(key) ?? { totalPO: 0, totalSpend: 0 };
+      entry.totalPO += Number(row.po ?? 0);
+      entry.totalSpend += Number(row.spend ?? 0);
+      const yearValue = Number(row.year);
+      if (!Number.isNaN(yearValue)) {
+        entry.lastSeen = entry.lastSeen ? Math.max(entry.lastSeen, yearValue) : yearValue;
+      }
+      map.set(key, entry);
+    }
+    return map;
+  }, [db.factRows]);
 
   useEffect(() => {
     const code = normCode(taskSupplierCode);
@@ -2255,6 +2277,22 @@ export default function SupplierRiskOpsDashboard() {
         .map((x) => normCode(x))
         .filter(Boolean)
     );
+  }
+
+  function parseContactEntries(text: string) {
+    return text
+      .split(/\n+/)
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .map((line) => {
+        const [code, email] = line.split(/\s+/);
+        return { code: code ?? "", email: email ?? "" };
+      })
+      .filter((entry) => entry.code && entry.email);
+  }
+
+  function getCandidateKey(code: string, name: string) {
+    return `${normCode(code)}::${safeStr(name).toLowerCase()}`;
   }
 
   function handleToggleSupplierSelection(code: string) {
@@ -2874,12 +2912,15 @@ export default function SupplierRiskOpsDashboard() {
   function addTask() {
     const title = safeStr(taskTitle);
     if (!title) return;
+    const supplierName = safeStr(taskSupplierName);
+    const resolvedTitle =
+      supplierName && !title.toLowerCase().includes(supplierName.toLowerCase()) ? `${title} — ${supplierName}` : title;
     addTaskEntry({
-      title,
+      title: resolvedTitle,
       date: taskDate,
       note: taskNote,
       supplierCode: taskSupplierCode,
-      supplierName: taskSupplierName,
+      supplierName: supplierName || taskSupplierName,
       contactName: taskContactName || db.settings.bulkContactName,
       contactEmail: taskContactEmail || db.settings.bulkContactEmail,
       dueDate: taskDueDate,
@@ -3095,6 +3136,7 @@ export default function SupplierRiskOpsDashboard() {
   }, [taskDate]);
 
   const pctOfTotal = (value: number) => (overviewKpis.total ? Math.round((value / overviewKpis.total) * 100) : 0);
+  const pctOfHighRisk = (value: number) => (overviewKpis.high ? Math.round((value / overviewKpis.high) * 100) : 0);
   const getFunnelColor = (stage: string) => {
     if (stage === "High risk") return getBarColor("riskLevel", "High", DEFAULT_RISK_PALETTE.High);
     if (stage === "Sent") return getBarColor("contractStatus", "Sent", DEFAULT_CONTRACT_PALETTE.Sent);
@@ -3228,27 +3270,7 @@ export default function SupplierRiskOpsDashboard() {
               <EmptyState title="No data loaded" subtitle="Import your XLSX tracker (recommended) or a DB snapshot (JSON)." />
             ) : (
               <>
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <Button
-                      variant={overviewScope === "Overall" ? "default" : "outline"}
-                      onClick={() => setOverviewScope("Overall")}
-                    >
-                      Overall
-                    </Button>
-                    <Button
-                      variant={overviewScope === "Austria" ? "default" : "outline"}
-                      onClick={() => setOverviewScope("Austria")}
-                    >
-                      Austria
-                    </Button>
-                    <Button
-                      variant={overviewScope === "Switzerland" ? "default" : "outline"}
-                      onClick={() => setOverviewScope("Switzerland")}
-                    >
-                      Switzerland
-                    </Button>
-                  </div>
+                <div className="flex flex-wrap items-center justify-end gap-2">
                   <Dialog>
                     <DialogTrigger asChild>
                       <Button variant="outline" size="sm" className="h-9 w-9 p-0" aria-label="Bar chart settings">
@@ -3260,7 +3282,7 @@ export default function SupplierRiskOpsDashboard() {
                         <DialogTitle>Bar chart settings</DialogTitle>
                       </DialogHeader>
                       <div className="text-sm text-muted-foreground">
-                        Adjust fill styles and palettes for countries, categories, funnel stages, risk levels, and contract statuses.
+                        Quick styling tweaks for the overview charts.
                       </div>
                       <div className="mt-4 space-y-4">
                         <div className="rounded-2xl border p-3">
@@ -3305,143 +3327,11 @@ export default function SupplierRiskOpsDashboard() {
                         </div>
 
                         <div className="rounded-2xl border p-3">
-                          <div className="text-xs text-muted-foreground">Palette rules</div>
-                          <Textarea
-                            value={barChartSettings.rulesNote ?? ""}
-                            onChange={(e) => setAppSettings({ barChartSettings: { rulesNote: e.target.value } })}
-                            placeholder="e.g. Use blue for volume, red for risk, and keep funnel stages consistent across teams."
-                            className="mt-2 min-h-[90px]"
-                          />
-                        </div>
-
-                        <div className="rounded-2xl border p-3">
-                          <div className="text-xs text-muted-foreground">Email automation rules</div>
-                          <div className="mt-2 grid gap-2">
-                            <div className="flex items-center justify-between gap-2">
-                              <div className="text-xs text-muted-foreground">Initial follow-up (days)</div>
-                              <Input
-                                type="number"
-                                value={emailAutomation.initialFollowUpDays}
-                                onChange={(e) =>
-                                  setAppSettings({
-                                    emailAutomation: {
-                                      ...emailAutomation,
-                                      initialFollowUpDays: Math.max(1, Number(e.target.value) || 1),
-                                    },
-                                  })
-                                }
-                                className="h-8 w-24"
-                              />
-                            </div>
-                            <div className="flex items-center justify-between gap-2">
-                              <div className="text-xs text-muted-foreground">Follow-up after reminder (days)</div>
-                              <Input
-                                type="number"
-                                value={emailAutomation.followUpDays}
-                                onChange={(e) =>
-                                  setAppSettings({
-                                    emailAutomation: {
-                                      ...emailAutomation,
-                                      followUpDays: Math.max(1, Number(e.target.value) || 1),
-                                    },
-                                  })
-                                }
-                                className="h-8 w-24"
-                              />
-                            </div>
-                          </div>
-                        </div>
-
-                        <div className="rounded-2xl border p-3">
-                          <div className="text-xs text-muted-foreground">Country palette</div>
-                          <div className="mt-2 space-y-2">
-                            {paletteCountries.map((country) => (
-                              <div key={country} className="flex items-center justify-between gap-2 rounded-xl border p-2">
-                                <div className="text-sm font-medium">{country}</div>
-                                <div className="flex items-center gap-2">
-                                  <input
-                                    type="color"
-                                    value={getBarColor("country", country, "#60a5fa")}
-                                    onChange={(e) => updateBarPalette("country", country, e.target.value)}
-                                  />
-                                  <Input
-                                    value={getBarColor("country", country, "#60a5fa")}
-                                    onChange={(e) => updateBarPalette("country", country, e.target.value)}
-                                    className="h-8 w-[110px]"
-                                  />
-                                  <Button variant="outline" size="sm" onClick={() => clearBarPalette("country", country)}>
-                                    Reset
-                                  </Button>
-                                </div>
-                              </div>
-                            ))}
-                            {paletteCountries.length === 0 ? (
-                              <div className="text-xs text-muted-foreground">No countries available yet. Import data first.</div>
-                            ) : null}
-                          </div>
-                        </div>
-
-                        <div className="rounded-2xl border p-3">
-                          <div className="text-xs text-muted-foreground">Category palette</div>
-                          <div className="mt-2 max-h-[260px] space-y-2 overflow-auto pr-1">
-                            {paletteCategories.map((category) => (
-                              <div key={category} className="flex items-center justify-between gap-2 rounded-xl border p-2">
-                                <div className="text-sm font-medium">{category}</div>
-                                <div className="flex items-center gap-2">
-                                  <input
-                                    type="color"
-                                    value={getBarColor("category", category, "#93c5fd")}
-                                    onChange={(e) => updateBarPalette("category", category, e.target.value)}
-                                  />
-                                  <Input
-                                    value={getBarColor("category", category, "#93c5fd")}
-                                    onChange={(e) => updateBarPalette("category", category, e.target.value)}
-                                    className="h-8 w-[110px]"
-                                  />
-                                  <Button variant="outline" size="sm" onClick={() => clearBarPalette("category", category)}>
-                                    Reset
-                                  </Button>
-                                </div>
-                              </div>
-                            ))}
-                            {paletteCategories.length === 0 ? (
-                              <div className="text-xs text-muted-foreground">No categories available yet. Import data first.</div>
-                            ) : null}
-                          </div>
-                        </div>
-
-                        <div className="rounded-2xl border p-3">
-                          <div className="text-xs text-muted-foreground">Funnel stages</div>
-                          <div className="mt-2 space-y-2">
-                            {funnelStages.map((stage) => (
-                              <div key={stage} className="flex items-center justify-between gap-2 rounded-xl border p-2">
-                                <div className="text-sm font-medium">{stage}</div>
-                                <div className="flex items-center gap-2">
-                                  <input
-                                    type="color"
-                                    value={getBarColor("funnelStage", stage, "#93c5fd")}
-                                    onChange={(e) => updateBarPalette("funnelStage", stage, e.target.value)}
-                                  />
-                                  <Input
-                                    value={getBarColor("funnelStage", stage, "#93c5fd")}
-                                    onChange={(e) => updateBarPalette("funnelStage", stage, e.target.value)}
-                                    className="h-8 w-[110px]"
-                                  />
-                                  <Button variant="outline" size="sm" onClick={() => clearBarPalette("funnelStage", stage)}>
-                                    Reset
-                                  </Button>
-                                </div>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-
-                        <div className="rounded-2xl border p-3">
                           <div className="text-xs text-muted-foreground">Risk level palette</div>
                           <div className="mt-2 space-y-2">
                             {RISK_LEVEL_OPTIONS.map((risk) => (
-                              <div key={risk} className="flex items-center justify-between gap-2 rounded-xl border p-2">
-                                <div className="text-sm font-medium">{risk}</div>
+                              <div key={risk} className="flex items-center justify-between gap-2 rounded-full border px-3 py-2 text-xs">
+                                <div className="font-medium">{risk}</div>
                                 <div className="flex items-center gap-2">
                                   <input
                                     type="color"
@@ -3453,211 +3343,6 @@ export default function SupplierRiskOpsDashboard() {
                                     onChange={(e) => updateBarPalette("riskLevel", risk, e.target.value)}
                                     className="h-8 w-[110px]"
                                   />
-                                  <Button variant="outline" size="sm" onClick={() => clearBarPalette("riskLevel", risk)}>
-                                    Reset
-                                  </Button>
-                                </div>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                </div>
-
-                <div className="grid gap-3 md:grid-cols-6">
-                  <Card className="md:col-span-2">
-                    <CardHeader className="pb-2">
-                      <CardTitle className="flex items-center gap-2 text-base">
-                        <Database className="h-4 w-4" /> Supplier base
-                      </CardTitle>
-                    </CardHeader>
-                    <CardContent>
-                      <div className="text-3xl font-semibold">{overviewKpis.total}</div>
-                      <div className="mt-1 text-sm text-muted-foreground">Unique supplier codes</div>
-                      <div className="mt-2 text-xs text-muted-foreground">
-                        Not evaluated: {overviewKpis.notEvalHighRisk} вЂў{" "}
-                        {overviewKpis.high ? Math.round((overviewKpis.notEvalHighRisk / overviewKpis.high) * 100) : 0}% of High risk
-                      </div>
-                    </CardContent>
-                  </Card>
-
-                        <div className="rounded-2xl border p-3">
-                          <div className="text-xs text-muted-foreground">Palette rules</div>
-                          <Textarea
-                            value={barChartSettings.rulesNote ?? ""}
-                            onChange={(e) => setAppSettings({ barChartSettings: { rulesNote: e.target.value } })}
-                            placeholder="e.g. Use blue for volume, red for risk, and keep funnel stages consistent across teams."
-                            className="mt-2 min-h-[90px]"
-                          />
-                        </div>
-
-                        <div className="rounded-2xl border p-3">
-                          <div className="text-xs text-muted-foreground">Email automation rules</div>
-                          <div className="mt-2 grid gap-2">
-                            <div className="flex items-center justify-between gap-2">
-                              <div className="text-xs text-muted-foreground">Initial follow-up (days)</div>
-                              <Input
-                                type="number"
-                                value={emailAutomation.initialFollowUpDays}
-                                onChange={(e) =>
-                                  setAppSettings({
-                                    emailAutomation: {
-                                      ...emailAutomation,
-                                      initialFollowUpDays: Math.max(1, Number(e.target.value) || 1),
-                                    },
-                                  })
-                                }
-                                className="h-8 w-24"
-                              />
-                            </div>
-                            <div className="flex items-center justify-between gap-2">
-                              <div className="text-xs text-muted-foreground">Follow-up after reminder (days)</div>
-                              <Input
-                                type="number"
-                                value={emailAutomation.followUpDays}
-                                onChange={(e) =>
-                                  setAppSettings({
-                                    emailAutomation: {
-                                      ...emailAutomation,
-                                      followUpDays: Math.max(1, Number(e.target.value) || 1),
-                                    },
-                                  })
-                                }
-                                className="h-8 w-24"
-                              />
-                            </div>
-                          </div>
-                        </div>
-
-                        <div className="rounded-2xl border p-3">
-                          <div className="text-xs text-muted-foreground">Country palette</div>
-                          <div className="mt-2 space-y-2">
-                            {paletteCountries.map((country) => (
-                              <div key={country} className="flex items-center justify-between gap-2 rounded-xl border p-2">
-                                <div className="text-sm font-medium">{country}</div>
-                                <div className="flex items-center gap-2">
-                                  <input
-                                    type="color"
-                                    value={getBarColor("country", country, "#60a5fa")}
-                                    onChange={(e) => updateBarPalette("country", country, e.target.value)}
-                                  />
-                                  <Input
-                                    value={getBarColor("country", country, "#60a5fa")}
-                                    onChange={(e) => updateBarPalette("country", country, e.target.value)}
-                                    className="h-8 w-[110px]"
-                                  />
-                                  <Button variant="outline" size="sm" onClick={() => clearBarPalette("country", country)}>
-                                    Reset
-                                  </Button>
-                                </div>
-                              </div>
-                            ))}
-                            {paletteCountries.length === 0 ? (
-                              <div className="text-xs text-muted-foreground">No countries available yet. Import data first.</div>
-                            ) : null}
-                          </div>
-                        </div>
-
-                        <div className="rounded-2xl border p-3">
-                          <div className="text-xs text-muted-foreground">Category palette</div>
-                          <div className="mt-2 max-h-[260px] space-y-2 overflow-auto pr-1">
-                            {paletteCategories.map((category) => (
-                              <div key={category} className="flex items-center justify-between gap-2 rounded-xl border p-2">
-                                <div className="text-sm font-medium">{category}</div>
-                                <div className="flex items-center gap-2">
-                                  <input
-                                    type="color"
-                                    value={getBarColor("category", category, "#93c5fd")}
-                                    onChange={(e) => updateBarPalette("category", category, e.target.value)}
-                                  />
-                                  <Input
-                                    value={getBarColor("category", category, "#93c5fd")}
-                                    onChange={(e) => updateBarPalette("category", category, e.target.value)}
-                                    className="h-8 w-[110px]"
-                                  />
-                                  <Button variant="outline" size="sm" onClick={() => clearBarPalette("category", category)}>
-                                    Reset
-                                  </Button>
-                                </div>
-                              </div>
-                            ))}
-                            {paletteCategories.length === 0 ? (
-                              <div className="text-xs text-muted-foreground">No categories available yet. Import data first.</div>
-                            ) : null}
-                          </div>
-                        </div>
-
-                        <div className="rounded-2xl border p-3">
-                          <div className="text-xs text-muted-foreground">Funnel stages</div>
-                          <div className="mt-2 space-y-2">
-                            {funnelStages.map((stage) => (
-                              <div key={stage} className="flex items-center justify-between gap-2 rounded-xl border p-2">
-                                <div className="text-sm font-medium">{stage}</div>
-                                <div className="flex items-center gap-2">
-                                  <input
-                                    type="color"
-                                    value={getBarColor("funnelStage", stage, "#93c5fd")}
-                                    onChange={(e) => updateBarPalette("funnelStage", stage, e.target.value)}
-                                  />
-                                  <Input
-                                    value={getBarColor("funnelStage", stage, "#93c5fd")}
-                                    onChange={(e) => updateBarPalette("funnelStage", stage, e.target.value)}
-                                    className="h-8 w-[110px]"
-                                  />
-                                  <Button variant="outline" size="sm" onClick={() => clearBarPalette("funnelStage", stage)}>
-                                    Reset
-                                  </Button>
-                                </div>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-
-                        <div className="rounded-2xl border p-3">
-                          <div className="text-xs text-muted-foreground">Risk level palette</div>
-                          <div className="mt-2 space-y-2">
-                            {RISK_LEVEL_OPTIONS.map((risk) => (
-                              <div key={risk} className="flex items-center justify-between gap-2 rounded-xl border p-2">
-                                <div className="text-sm font-medium">{risk}</div>
-                                <div className="flex items-center gap-2">
-                                  <input
-                                    type="color"
-                                    value={getBarColor("riskLevel", risk, DEFAULT_RISK_PALETTE[risk])}
-                                    onChange={(e) => updateBarPalette("riskLevel", risk, e.target.value)}
-                                  />
-                                  <Input
-                                    value={getBarColor("riskLevel", risk, DEFAULT_RISK_PALETTE[risk])}
-                                    onChange={(e) => updateBarPalette("riskLevel", risk, e.target.value)}
-                                    className="h-8 w-[110px]"
-                                  />
-                                  <Button variant="outline" size="sm" onClick={() => clearBarPalette("riskLevel", risk)}>
-                                    Reset
-                                  </Button>
-                                </div>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-
-                        <div className="rounded-2xl border p-3">
-                          <div className="text-xs text-muted-foreground">Contract status palette</div>
-                          <div className="mt-2 space-y-2">
-                            {CONTRACT_STATUS_OPTIONS.map((status) => (
-                              <div key={status} className="flex items-center justify-between gap-2 rounded-xl border p-2">
-                                <div className="text-sm font-medium">{status}</div>
-                                <div className="flex items-center gap-2">
-                                  <input
-                                    type="color"
-                                    value={getBarColor("contractStatus", status, DEFAULT_CONTRACT_PALETTE[status])}
-                                    onChange={(e) => updateBarPalette("contractStatus", status, e.target.value)}
-                                  />
-                                  <Input
-                                    value={getBarColor("contractStatus", status, DEFAULT_CONTRACT_PALETTE[status])}
-                                    onChange={(e) => updateBarPalette("contractStatus", status, e.target.value)}
-                                    className="h-8 w-[110px]"
-                                  />
-                                  <Button variant="outline" size="sm" onClick={() => clearBarPalette("contractStatus", status)}>
-                                    Reset
-                                  </Button>
                                 </div>
                               </div>
                             ))}
@@ -3668,8 +3353,8 @@ export default function SupplierRiskOpsDashboard() {
                   </Dialog>
                 </div>
 
-                <div className="grid gap-3 md:grid-cols-6">
-                  <Card className="md:col-span-2">
+                <div className="grid gap-3 md:grid-cols-5">
+                  <Card>
                     <CardHeader className="pb-2">
                       <CardTitle className="flex items-center gap-2 text-base">
                         <Database className="h-4 w-4" /> Supplier base
@@ -3684,10 +3369,43 @@ export default function SupplierRiskOpsDashboard() {
                       </div>
                     </CardContent>
                   </Card>
-                </div>
-
-                <div className="grid gap-3 md:grid-cols-6">
-                  <Card className="md:col-span-2">
+                  <Card>
+                    <CardHeader className="pb-2">
+                      <CardTitle className="flex items-center gap-2 text-base">
+                        <ShieldAlert className="h-4 w-4" /> High risk suppliers
+                      </CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                      <div className="text-3xl font-semibold">{overviewKpis.high}</div>
+                      <div className="mt-1 text-sm text-muted-foreground">Marked as High risk</div>
+                      <div className="mt-2 text-xs text-muted-foreground">{pctOfTotal(overviewKpis.high)}% of total suppliers</div>
+                    </CardContent>
+                  </Card>
+                  <Card>
+                    <CardHeader className="pb-2">
+                      <CardTitle className="flex items-center gap-2 text-base">
+                        <FileUp className="h-4 w-4" /> Agreement sent
+                      </CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                      <div className="text-3xl font-semibold">{overviewKpis.sent}</div>
+                      <div className="mt-1 text-sm text-muted-foreground">Sent to High risk suppliers</div>
+                      <div className="mt-2 text-xs text-muted-foreground">{pctOfHighRisk(overviewKpis.sent)}% of High risk</div>
+                    </CardContent>
+                  </Card>
+                  <Card>
+                    <CardHeader className="pb-2">
+                      <CardTitle className="flex items-center gap-2 text-base">
+                        <CheckCircle2 className="h-4 w-4" /> Agreement signed
+                      </CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                      <div className="text-3xl font-semibold">{overviewKpis.signed}</div>
+                      <div className="mt-1 text-sm text-muted-foreground">Signed by High risk suppliers</div>
+                      <div className="mt-2 text-xs text-muted-foreground">{pctOfHighRisk(overviewKpis.signed)}% of High risk</div>
+                    </CardContent>
+                  </Card>
+                  <Card>
                     <CardHeader className="pb-2">
                       <CardTitle className="flex items-center gap-2 text-base">
                         <Split className="h-4 w-4" /> Quality alerts
@@ -5413,24 +5131,44 @@ export default function SupplierRiskOpsDashboard() {
                                 </div>
                               </div>
                               <div className="grid gap-2 md:grid-cols-2">
-                                {selectedDuplicate.candidates.map((c) => (
-                                  <div
-                                    key={c.name}
-                                    className={`flex items-center justify-between gap-2 rounded-2xl border p-3 ${
-                                      c.name === selectedDuplicate.recommended
-                                        ? "border-green-200 bg-green-50"
-                                        : "border-red-200 bg-red-50"
-                                    }`}
-                                  >
-                                    <div>
-                                      <div className="font-medium">{c.name}</div>
-                                      <div className="text-xs text-muted-foreground">Seen {c.count}Г—</div>
+                                {selectedDuplicate.candidates.map((c) => {
+                                  const stats = duplicateCandidateStats.get(getCandidateKey(selectedDuplicate.code, c.name));
+                                  return (
+                                    <div
+                                      key={c.name}
+                                      className={`flex items-center justify-between gap-2 rounded-2xl border p-3 ${
+                                        c.name === selectedDuplicate.recommended
+                                          ? "border-green-200 bg-green-50"
+                                          : "border-red-200 bg-red-50"
+                                      }`}
+                                    >
+                                      <div>
+                                        <div className="font-medium">{c.name}</div>
+                                        <div className="text-xs text-muted-foreground">Seen {c.count}Г—</div>
+                                      </div>
+                                      <div className="flex items-center gap-2">
+                                        <Button
+                                          variant="outline"
+                                          size="sm"
+                                          onClick={() =>
+                                            setDuplicateCandidateDetail({
+                                              code: selectedDuplicate.code,
+                                              name: c.name,
+                                              totalPO: stats?.totalPO ?? 0,
+                                              totalSpend: stats?.totalSpend ?? 0,
+                                              lastSeen: stats?.lastSeen ? String(stats.lastSeen) : "N/A",
+                                            })
+                                          }
+                                        >
+                                          Details
+                                        </Button>
+                                        <Button variant="outline" size="sm" onClick={() => setCanonical(selectedDuplicate.code, c.name)}>
+                                          Select
+                                        </Button>
+                                      </div>
                                     </div>
-                                    <Button variant="outline" size="sm" onClick={() => setCanonical(selectedDuplicate.code, c.name)}>
-                                      Select
-                                    </Button>
-                                  </div>
-                                ))}
+                                  );
+                                })}
                               </div>
                             </CardContent>
                           </Card>
@@ -5443,6 +5181,42 @@ export default function SupplierRiskOpsDashboard() {
                     )}
                   </CardContent>
                 </Card>
+
+                <Dialog
+                  open={!!duplicateCandidateDetail}
+                  onOpenChange={(open) => {
+                    if (!open) setDuplicateCandidateDetail(null);
+                  }}
+                >
+                  <DialogContent className="max-w-lg">
+                    <DialogHeader>
+                      <DialogTitle>Candidate details</DialogTitle>
+                    </DialogHeader>
+                    {duplicateCandidateDetail ? (
+                      <div className="space-y-3 text-sm">
+                        <div className="rounded-2xl border p-3">
+                          <div className="text-xs text-muted-foreground">Supplier name</div>
+                          <div className="text-lg font-semibold">{duplicateCandidateDetail.name}</div>
+                          <div className="mt-1 text-xs text-muted-foreground">Supplier code: {duplicateCandidateDetail.code}</div>
+                        </div>
+                        <div className="grid gap-2 md:grid-cols-3">
+                          <div className="rounded-2xl border p-3">
+                            <div className="text-xs text-muted-foreground">PO count</div>
+                            <div className="text-lg font-semibold">{Math.round(duplicateCandidateDetail.totalPO)}</div>
+                          </div>
+                          <div className="rounded-2xl border p-3">
+                            <div className="text-xs text-muted-foreground">SUM</div>
+                            <div className="text-lg font-semibold">{fmtMoney(duplicateCandidateDetail.totalSpend)}</div>
+                          </div>
+                          <div className="rounded-2xl border p-3">
+                            <div className="text-xs text-muted-foreground">Date when</div>
+                            <div className="text-lg font-semibold">{duplicateCandidateDetail.lastSeen ?? "N/A"}</div>
+                          </div>
+                        </div>
+                      </div>
+                    ) : null}
+                  </DialogContent>
+                </Dialog>
               </>
             )}
           </TabsContent>
@@ -5478,30 +5252,26 @@ export default function SupplierRiskOpsDashboard() {
                       <CardContent className="p-4">
                         <div className="text-sm font-medium">Supplier code contact</div>
                         <div className="text-xs text-muted-foreground">
-                          Save a global contact email per supplier code for quick task creation.
+                          Save contacts in bulk (one supplier code and email per line).
                         </div>
-                        <div className="mt-3 grid gap-2 md:grid-cols-2">
-                          <Input
-                            value={bulkContactCode}
-                            onChange={(e) => setBulkContactCode(e.target.value)}
-                            placeholder="Supplier code"
-                          />
-                          <Input
-                            value={bulkContactEmail}
-                            onChange={(e) => setBulkContactEmail(e.target.value)}
-                            placeholder="Contact email"
-                          />
-                        </div>
+                        <Textarea
+                          value={bulkContactEntries}
+                          onChange={(e) => setBulkContactEntries(e.target.value)}
+                          placeholder="SUPPLIER_CODE contact@email.com"
+                          className="mt-3 min-h-[120px]"
+                        />
+                        <div className="mt-2 text-xs text-muted-foreground">Format: SUPPLIER_CODE email@company.com (one per line).</div>
                         <div className="mt-3 flex justify-end">
                           <Button
                             variant="secondary"
                             onClick={() => {
-                              upsertSupplierContact(bulkContactCode, bulkContactEmail);
-                              setBulkContactCode("");
-                              setBulkContactEmail("");
+                              parseContactEntries(bulkContactEntries).forEach((entry) =>
+                                upsertSupplierContact(entry.code, entry.email)
+                              );
+                              setBulkContactEntries("");
                             }}
                           >
-                            Save contact
+                            Save contacts
                           </Button>
                         </div>
                         {Object.keys(db.settings.supplierContacts ?? {}).length ? (
@@ -5690,6 +5460,105 @@ export default function SupplierRiskOpsDashboard() {
                           </Button>
                           <Button className="gap-2" onClick={applyCategoryFastAction}>
                             <RefreshCw className="h-4 w-4" /> Apply
+                          </Button>
+                        </div>
+                      </CardContent>
+                    </Card>
+                  </div>
+                  <div className="space-y-3">
+                    <Card>
+                      <CardContent className="p-4">
+                        <div className="text-sm font-medium">Bulk target list</div>
+                        <div className="text-xs text-muted-foreground">
+                          Paste supplier codes below to preview and apply bulk rules.
+                        </div>
+                        <Textarea
+                          value={bulkCodes}
+                          onChange={(e) => setBulkCodes(e.target.value)}
+                          placeholder="Paste supplier codes (space/comma/new line separated)"
+                          className="mt-3 min-h-[140px]"
+                        />
+                        <div className="mt-2 flex items-center justify-between text-xs text-muted-foreground">
+                          <span>Loaded: {bulkParsedCodes.length} codes</span>
+                          <Button variant="outline" size="sm" onClick={() => setBulkCodes("")}>
+                            Clear
+                          </Button>
+                        </div>
+                        <div className="mt-3 rounded-xl border">
+                          {bulkPreviewRows.length ? (
+                            <Table>
+                              <TableHeader>
+                                <TableRow>
+                                  <TableHead>Code</TableHead>
+                                  <TableHead>Supplier</TableHead>
+                                  <TableHead>Risk</TableHead>
+                                  <TableHead>Contract</TableHead>
+                                </TableRow>
+                              </TableHeader>
+                              <TableBody>
+                                {bulkPreviewRows.map((row) => (
+                                  <TableRow key={row.code}>
+                                    <TableCell className="font-medium">{row.code}</TableCell>
+                                    <TableCell>{row.name}</TableCell>
+                                    <TableCell>{row.risk}</TableCell>
+                                    <TableCell>{row.contract}</TableCell>
+                                  </TableRow>
+                                ))}
+                              </TableBody>
+                            </Table>
+                          ) : (
+                            <div className="p-4 text-xs text-muted-foreground">No codes yet. Paste above to preview names.</div>
+                          )}
+                        </div>
+                      </CardContent>
+                    </Card>
+
+                    <Card>
+                      <CardContent className="p-4">
+                        <div className="text-sm font-medium">Find suppliers by name</div>
+                        <div className="text-xs text-muted-foreground">
+                          Type a name fragment to find supplier codes and add them to the bulk list.
+                        </div>
+                        <Input
+                          value={bulkNameQuery}
+                          onChange={(e) => setBulkNameQuery(e.target.value)}
+                          placeholder="Start typing a supplier name"
+                          className="mt-3"
+                        />
+                        <div className="mt-3 max-h-[240px] overflow-auto rounded-xl border">
+                          {bulkNameMatchesList.length ? (
+                            <Table>
+                              <TableHeader>
+                                <TableRow>
+                                  <TableHead className="w-[40px]" />
+                                  <TableHead>Supplier</TableHead>
+                                  <TableHead>Code</TableHead>
+                                </TableRow>
+                              </TableHeader>
+                              <TableBody>
+                                {bulkNameMatchesList.map((match) => (
+                                  <TableRow key={match.code}>
+                                    <TableCell>
+                                      <input
+                                        type="checkbox"
+                                        checked={bulkNameSelected.has(match.code)}
+                                        onChange={() => handleToggleBulkNameSelection(match.code)}
+                                      />
+                                    </TableCell>
+                                    <TableCell className="font-medium">{match.canonicalName}</TableCell>
+                                    <TableCell className="text-xs text-muted-foreground">{match.code}</TableCell>
+                                  </TableRow>
+                                ))}
+                              </TableBody>
+                            </Table>
+                          ) : (
+                            <div className="p-4 text-xs text-muted-foreground">No matches yet.</div>
+                          )}
+                        </div>
+                        <div className="mt-3 flex items-center justify-between text-xs text-muted-foreground">
+                          <span>Selected: {bulkNameSelected.size}</span>
+                          <Button variant="secondary" size="sm" onClick={handleApplyBulkNameSelection}>
+                            Add to bulk list
                           </Button>
                         </div>
                       </CardContent>
@@ -6059,4 +5928,3 @@ function PlusIcon() {
     </svg>
   );
 }
-
