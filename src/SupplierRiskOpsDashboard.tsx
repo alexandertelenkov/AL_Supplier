@@ -78,6 +78,7 @@ type BarPaletteKey = "country" | "category" | "riskLevel" | "contractStatus" | "
 type BarChartSettings = {
   fillStyle: BarFillStyle;
   palettes: Record<BarPaletteKey, Record<string, string>>;
+  rulesNote?: string;
 };
 
 type FactRow = {
@@ -115,8 +116,9 @@ type AppSettings = {
   missingSubfamilySpendThreshold: number;
   /** UI palette + styling for bar charts */
   barChartSettings: BarChartSettings;
-  /** Saved supplier contacts (code -> email) */
-  supplierContacts: Record<string, string>;
+  /** Bulk contact defaults for outreach */
+  bulkContactName: string;
+  bulkContactEmail: string;
 };
 
 type UndoBatch = {
@@ -207,11 +209,12 @@ type Task = {
   note?: string;
   supplierCode?: string;
   supplierName?: string;
+  contactName?: string;
   contactEmail?: string;
+  createdAt: string; // ISO
   dueDate?: string; // YYYY-MM-DD
-  kind?: "manual" | "contractFollowup";
-  stage?: "initial" | "followup" | "urgent";
-  priority?: "normal" | "warning" | "urgent";
+  kind?: "general" | "email";
+  followUpStage?: "initial" | "followup" | "urgent";
   status: "todo" | "done";
 };
 
@@ -225,8 +228,8 @@ type BulkEvalChoice = EvaluationChoice | "No change";
 
 const LS_KEY = "supplier-risk-ops-dashboard:v1";
 
-const RISK_LEVELS: RiskLevel[] = ["High", "Non-risk", "Unknown"];
-const CONTRACT_STATUSES: ContractStatus[] = ["Not sent", "Sent", "Signed", "Review", "Not compliant", "N/A"];
+const RISK_LEVEL_OPTIONS: RiskLevel[] = ["High", "Non-risk", "Unknown"];
+const CONTRACT_STATUS_OPTIONS: ContractStatus[] = ["Not sent", "Sent", "Signed", "Review", "Not compliant", "N/A"];
 const DEFAULT_RISK_PALETTE: Record<RiskLevel, string> = {
   High: "#fca5a5",
   "Non-risk": "#86efac",
@@ -255,8 +258,10 @@ const DEFAULT_SETTINGS: AppSettings = {
       contractStatus: { ...DEFAULT_CONTRACT_PALETTE },
       funnelStage: {},
     },
+    rulesNote: "",
   },
-  supplierContacts: {},
+  bulkContactName: "",
+  bulkContactEmail: "",
 };
 
 const RISK_LEVELS: RiskLevel[] = ["High", "Non-risk", "Unknown"];
@@ -554,6 +559,12 @@ type LegacySettings = Partial<AppSettings> & {
   countryBarFillStyle?: BarFillStyle;
 };
 
+function addDays(date: string, days: number) {
+  const d = new Date(`${date}T00:00:00`);
+  d.setDate(d.getDate() + days);
+  return d.toISOString().slice(0, 10);
+}
+
 function normalizeSettings(settings?: LegacySettings): AppSettings {
   const merged = { ...DEFAULT_SETTINGS, ...(settings ?? {}) };
   const legacyPalette = settings?.countryPalette;
@@ -584,34 +595,6 @@ function normalizeSettings(settings?: LegacySettings): AppSettings {
   };
 }
 
-function normalizeTasks(tasks: any[]): Task[] {
-  if (!Array.isArray(tasks)) return [];
-  return tasks
-    .map((t) => {
-      if (!t || typeof t !== "object") return null;
-      const date = safeStr(t.date) || todayIso();
-      const createdAt = safeStr(t.createdAt) || nowIso();
-      const dueDate = safeStr(t.dueDate) || date;
-      return {
-        id: safeStr(t.id) || uuid(),
-        date,
-        dueDate,
-        createdAt,
-        owner: safeStr(t.owner) || "Unknown",
-        title: safeStr(t.title) || "Task",
-        note: safeStr(t.note) || undefined,
-        supplierCode: safeStr(t.supplierCode) || undefined,
-        supplierName: safeStr(t.supplierName) || undefined,
-        contactEmail: safeStr(t.contactEmail) || undefined,
-        kind: t.kind === "contractFollowup" ? "contractFollowup" : "manual",
-        stage: t.stage,
-        priority: t.priority ?? "normal",
-        status: t.status === "done" ? "done" : "todo",
-      } as Task;
-    })
-    .filter(Boolean) as Task[];
-}
-
 function loadDB(): PersistedDB {
   try {
     const raw = localStorage.getItem(LS_KEY);
@@ -624,7 +607,7 @@ function loadDB(): PersistedDB {
       overrides: parsed.overrides ?? {},
       categoryRules: Array.isArray(parsed.categoryRules) ? parsed.categoryRules : [],
       settings: normalizeSettings(parsed.settings ?? {}),
-      tasks: normalizeTasks(Array.isArray(parsed.tasks) ? parsed.tasks : []),
+      tasks: Array.isArray(parsed.tasks) ? parsed.tasks : [],
       log: Array.isArray(parsed.log) ? parsed.log : [],
       lastUndo: parsed.lastUndo ?? null,
     };
@@ -1504,7 +1487,9 @@ export default function SupplierRiskOpsDashboard() {
   const [taskNote, setTaskNote] = useState("");
   const [taskSupplierCode, setTaskSupplierCode] = useState("");
   const [taskSupplierName, setTaskSupplierName] = useState("");
+  const [taskContactName, setTaskContactName] = useState("");
   const [taskContactEmail, setTaskContactEmail] = useState("");
+  const [taskDueDate, setTaskDueDate] = useState(() => new Date().toISOString().slice(0, 10));
 
   const [selectedSupplierCodes, setSelectedSupplierCodes] = useState<Set<string>>(new Set());
   const [selectedSuppliers, setSelectedSuppliers] = useState<Set<string>>(new Set());
@@ -1615,6 +1600,19 @@ export default function SupplierRiskOpsDashboard() {
     }
     return map;
   }, [db.factRows]);
+  const bulkContactName = db.settings.bulkContactName;
+  const bulkContactEmail = db.settings.bulkContactEmail;
+
+  const redIgnoranceAlerts = useMemo(() => {
+    const today = new Date().toISOString().slice(0, 10);
+    return db.tasks.filter((t) => {
+      if (t.kind !== "email") return false;
+      const due = t.dueDate ?? t.date;
+      if (!due) return false;
+      if (t.followUpStage === "urgent") return true;
+      return t.followUpStage === "followup" && due < today && t.status !== "done";
+    });
+  }, [db.tasks]);
 
   const categoryMetricsSorted = useMemo(() => {
     const dir = categoryTableSort.dir === "asc" ? 1 : -1;
@@ -2155,7 +2153,7 @@ export default function SupplierRiskOpsDashboard() {
         overrides: (parsed as any).overrides ?? {},
         categoryRules: Array.isArray((parsed as any).categoryRules) ? (parsed as any).categoryRules : [],
         settings: normalizeSettings(((parsed as any).settings ?? {}) as LegacySettings),
-        tasks: normalizeTasks(Array.isArray((parsed as any).tasks) ? (parsed as any).tasks : []),
+        tasks: Array.isArray((parsed as any).tasks) ? (parsed as any).tasks : [],
         log: Array.isArray((parsed as any).log) ? (parsed as any).log : [],
         lastUndo: (parsed as any).lastUndo ?? null,
       };
@@ -2692,39 +2690,27 @@ export default function SupplierRiskOpsDashboard() {
     });
   }
 
-  function setAppSettings(patch: Partial<AppSettings>) {
+  type AppSettingsPatch = Omit<Partial<AppSettings>, "barChartSettings"> & {
+    barChartSettings?: Partial<BarChartSettings>;
+  };
+
+  function setAppSettings(patch: AppSettingsPatch) {
     setDB((prev) => {
-      const nextSettings: AppSettings = { ...prev.settings, ...patch };
-      if (patch.barChartSettings) {
-        nextSettings.barChartSettings = {
+      const nextSettings: AppSettings = {
+        ...prev.settings,
+        ...patch,
+        barChartSettings: {
           ...prev.settings.barChartSettings,
-          ...patch.barChartSettings,
+          ...(patch.barChartSettings ?? {}),
           palettes: {
             ...prev.settings.barChartSettings.palettes,
-            ...(patch.barChartSettings.palettes ?? {}),
+            ...(patch.barChartSettings?.palettes ?? {}),
           },
-        };
-      }
+        },
+      };
       return { ...prev, settings: nextSettings };
     });
     pushLog({ type: "SETTINGS", summary: "Updated app settings", details: patch });
-  }
-
-  function upsertSupplierContact(codeRaw: string, emailRaw: string) {
-    const code = normCode(codeRaw);
-    const email = safeStr(emailRaw);
-    if (!code) return;
-    setDB((prev) => {
-      const next = { ...(prev.settings.supplierContacts ?? {}) };
-      if (!email) delete next[code];
-      else next[code] = email;
-      return { ...prev, settings: { ...prev.settings, supplierContacts: next } };
-    });
-    pushLog({
-      type: "SETTINGS",
-      summary: email ? `Saved supplier contact for ${code}` : `Cleared supplier contact for ${code}`,
-      details: { code, email },
-    });
   }
 
   function updateBarPalette(kind: BarPaletteKey, keyRaw: string, color: string) {
@@ -2735,8 +2721,10 @@ export default function SupplierRiskOpsDashboard() {
     else next[key] = color;
     setAppSettings({
       barChartSettings: {
-        ...db.settings.barChartSettings,
-        palettes: { ...db.settings.barChartSettings.palettes, [kind]: next },
+        palettes: {
+          ...db.settings.barChartSettings.palettes,
+          [kind]: next,
+        },
       },
     });
   }
@@ -2748,8 +2736,10 @@ export default function SupplierRiskOpsDashboard() {
     delete next[key];
     setAppSettings({
       barChartSettings: {
-        ...db.settings.barChartSettings,
-        palettes: { ...db.settings.barChartSettings.palettes, [kind]: next },
+        palettes: {
+          ...db.settings.barChartSettings.palettes,
+          [kind]: next,
+        },
       },
     });
   }
@@ -2816,33 +2806,22 @@ export default function SupplierRiskOpsDashboard() {
     });
   }
 
-  function addTask(overrides?: Partial<Task>) {
-    const title = safeStr(overrides?.title ?? taskTitle);
-    if (!title) return;
-    const rawSupplierCode = safeStr(overrides?.supplierCode ?? taskSupplierCode);
-    const supplierCode = rawSupplierCode ? normCode(rawSupplierCode) : undefined;
-    const supplierName =
-      safeStr(overrides?.supplierName ?? taskSupplierName) ||
-      (supplierCode ? supplierByCode.get(supplierCode)?.canonicalName : undefined);
-    const contactEmail =
-      safeStr(overrides?.contactEmail ?? taskContactEmail) ||
-      (supplierCode ? db.settings.supplierContacts?.[supplierCode] : undefined);
-    const dueDate = safeStr(overrides?.dueDate ?? taskDate) || todayIso();
+  function addTaskEntry(partial: Partial<Task> & { title: string }) {
     const t: Task = {
       id: uuid(),
-      date: dueDate,
-      dueDate,
-      createdAt: overrides?.createdAt ?? nowIso(),
-      owner: safeStr(overrides?.owner ?? taskOwner) || actor,
-      title,
-      note: safeStr(overrides?.note ?? taskNote) || undefined,
-      supplierCode,
-      supplierName,
-      contactEmail,
-      kind: overrides?.kind ?? "manual",
-      stage: overrides?.stage,
-      priority: overrides?.priority ?? "normal",
-      status: overrides?.status ?? "todo",
+      date: partial.date ?? taskDate,
+      owner: partial.owner ?? (safeStr(taskOwner) || actor),
+      title: partial.title,
+      note: safeStr(partial.note) || undefined,
+      supplierCode: safeStr(partial.supplierCode) || undefined,
+      supplierName: safeStr(partial.supplierName) || undefined,
+      contactName: safeStr(partial.contactName) || undefined,
+      contactEmail: safeStr(partial.contactEmail) || undefined,
+      createdAt: partial.createdAt ?? nowIso(),
+      dueDate: partial.dueDate ?? taskDueDate,
+      kind: partial.kind ?? "general",
+      followUpStage: partial.followUpStage,
+      status: partial.status ?? "todo",
     };
     setDB((prev) => ({ ...prev, tasks: [t, ...prev.tasks] }));
     pushLog({ type: "TASK", summary: `Task added (${t.date}): ${t.title}`, details: t });
@@ -2866,7 +2845,45 @@ export default function SupplierRiskOpsDashboard() {
     setTaskNote("");
     setTaskSupplierCode("");
     setTaskSupplierName("");
-    setTaskContactEmail("");
+  }
+
+  function updateTask(id: string, patch: Partial<Task>) {
+    setDB((prev) => {
+      const tasks = prev.tasks.map((t) => (t.id === id ? { ...t, ...patch } : t));
+      const updated = tasks.find((t) => t.id === id);
+      pushLog({ type: "TASK", summary: `Task updated: ${updated?.title}`, details: updated });
+      return { ...prev, tasks };
+    });
+  }
+
+  function scheduleEmailFollowUp(options: {
+    supplierCode?: string;
+    supplierName?: string;
+    contactName?: string;
+    contactEmail?: string;
+    stage: "initial" | "followup";
+  }) {
+    const baseDate = new Date().toISOString().slice(0, 10);
+    const dueDate = options.stage === "initial" ? addDays(baseDate, 14) : addDays(baseDate, 7);
+    const title =
+      options.stage === "initial"
+        ? "Follow-up: signature in 14 days"
+        : "Escalation check: signature in 7 days";
+    addTaskEntry({
+      title,
+      date: dueDate,
+      dueDate,
+      kind: "email",
+      followUpStage: options.stage,
+      supplierCode: options.supplierCode,
+      supplierName: options.supplierName,
+      contactName: options.contactName || bulkContactName,
+      contactEmail: options.contactEmail || bulkContactEmail,
+      note:
+        options.stage === "initial"
+          ? "Email sent — reminder scheduled for 14 days."
+          : "Follow-up email sent — reminder scheduled for 7 days.",
+    });
   }
 
   function toggleTask(id: string) {
@@ -3237,11 +3254,7 @@ export default function SupplierRiskOpsDashboard() {
                                 className={`flex items-center gap-2 rounded-full border px-2 py-1 text-xs ${
                                   barChartSettings.fillStyle === opt.value ? "border-primary text-primary" : "text-muted-foreground"
                                 }`}
-                                onClick={() =>
-                                  setAppSettings({
-                                    barChartSettings: { ...barChartSettings, fillStyle: opt.value },
-                                  })
-                                }
+                                onClick={() => setAppSettings({ barChartSettings: { fillStyle: opt.value } })}
                               >
                                 <span className="h-4 w-4 rounded-sm border" style={opt.style} />
                                 {opt.label}
@@ -3252,11 +3265,12 @@ export default function SupplierRiskOpsDashboard() {
 
                         <div className="rounded-2xl border p-3">
                           <div className="text-xs text-muted-foreground">Palette rules</div>
-                          <ul className="mt-2 space-y-1 text-xs text-muted-foreground">
-                            <li>• Palettes apply globally across all bar charts.</li>
-                            <li>• Funnel stages, categories, and countries can be customized independently.</li>
-                            <li>• Risk and contract palettes default to status colors unless overridden.</li>
-                          </ul>
+                          <Textarea
+                            value={barChartSettings.rulesNote ?? ""}
+                            onChange={(e) => setAppSettings({ barChartSettings: { rulesNote: e.target.value } })}
+                            placeholder="e.g. Use blue for volume, red for risk, and keep funnel stages consistent across teams."
+                            className="mt-2 min-h-[90px]"
+                          />
                         </div>
 
                         <div className="rounded-2xl border p-3">
@@ -3346,7 +3360,7 @@ export default function SupplierRiskOpsDashboard() {
                         <div className="rounded-2xl border p-3">
                           <div className="text-xs text-muted-foreground">Risk level palette</div>
                           <div className="mt-2 space-y-2">
-                            {RISK_LEVELS.map((risk) => (
+                            {RISK_LEVEL_OPTIONS.map((risk) => (
                               <div key={risk} className="flex items-center justify-between gap-2 rounded-xl border p-2">
                                 <div className="text-sm font-medium">{risk}</div>
                                 <div className="flex items-center gap-2">
@@ -3372,7 +3386,7 @@ export default function SupplierRiskOpsDashboard() {
                         <div className="rounded-2xl border p-3">
                           <div className="text-xs text-muted-foreground">Contract status palette</div>
                           <div className="mt-2 space-y-2">
-                            {CONTRACT_STATUSES.map((status) => (
+                            {CONTRACT_STATUS_OPTIONS.map((status) => (
                               <div key={status} className="flex items-center justify-between gap-2 rounded-xl border p-2">
                                 <div className="text-sm font-medium">{status}</div>
                                 <div className="flex items-center gap-2">
@@ -3438,12 +3452,7 @@ export default function SupplierRiskOpsDashboard() {
                     </CardHeader>
                     <CardContent>
                       <div className="text-3xl font-semibold">{overviewKpis.signed}</div>
-                      <div className="mt-1 text-sm text-muted-foreground">
-                        {pctOfTotal(overviewKpis.signed)}% of total • Agreements signed
-                      </div>
-                      <div className="text-xs text-muted-foreground">
-                        High risk signed: {overviewKpis.highSigned}/{overviewKpis.high} ({Math.round(overviewKpis.completion * 100)}%)
-                      </div>
+                      <div className="mt-1 text-sm text-muted-foreground">Agreements signed</div>
                     </CardContent>
                   </Card>
 
@@ -4571,19 +4580,6 @@ export default function SupplierRiskOpsDashboard() {
                                               </div>
                                             </div>
                                             <div className="mt-2">
-                                              <div className="text-xs text-muted-foreground">Contact email</div>
-                                              <Input
-                                                value={taskContactEmail}
-                                                onChange={(e) => setTaskContactEmail(e.target.value)}
-                                                onFocus={() => {
-                                                  if (!taskContactEmail) {
-                                                    setTaskContactEmail(db.settings.supplierContacts?.[s.code] ?? "");
-                                                  }
-                                                }}
-                                                placeholder="supplier@contact.com"
-                                              />
-                                            </div>
-                                            <div className="mt-2">
                                               <div className="text-xs text-muted-foreground">Title</div>
                                               <Input value={taskTitle} onChange={(e) => setTaskTitle(e.target.value)} placeholder="Chase signature / send reminder / review docs…" />
                                             </div>
@@ -4614,13 +4610,12 @@ export default function SupplierRiskOpsDashboard() {
                                                 <Upload className="h-4 w-4" /> Email sent (14d)
                                               </Button>
                                               <Button
+                                                variant="outline"
                                                 className="gap-2"
                                                 onClick={() => {
-                                                  addTask({
-                                                    supplierCode: s.code,
-                                                    supplierName: s.canonicalName,
-                                                    contactEmail: taskContactEmail || db.settings.supplierContacts?.[s.code],
-                                                  });
+                                                  setTaskSupplierCode(s.code);
+                                                  setTaskSupplierName(s.canonicalName);
+                                                  addTask();
                                                 }}
                                               >
                                                 <CalendarDays className="h-4 w-4" /> Add task
@@ -5782,11 +5777,25 @@ export default function SupplierRiskOpsDashboard() {
                   </div>
                   <div>
                     <div className="text-xs text-muted-foreground">Supplier name (optional)</div>
-                    <Input value={taskSupplierName} onChange={(e) => setTaskSupplierName(e.target.value)} placeholder="Supplier name" />
+                    <Input value={taskSupplierName} onChange={(e) => setTaskSupplierName(e.target.value)} placeholder="Alpine Logistics GmbH" />
                   </div>
-                  <div>
-                    <div className="text-xs text-muted-foreground">Contact email (optional)</div>
-                    <Input value={taskContactEmail} onChange={(e) => setTaskContactEmail(e.target.value)} placeholder="supplier@contact.com" />
+                  <div className="grid gap-2 md:grid-cols-2">
+                    <div>
+                      <div className="text-xs text-muted-foreground">Contact name</div>
+                      <Input
+                        value={taskContactName}
+                        onChange={(e) => setTaskContactName(e.target.value)}
+                        placeholder={bulkContactName || "Procurement contact"}
+                      />
+                    </div>
+                    <div>
+                      <div className="text-xs text-muted-foreground">Contact email</div>
+                      <Input
+                        value={taskContactEmail}
+                        onChange={(e) => setTaskContactEmail(e.target.value)}
+                        placeholder={bulkContactEmail || "name@company.com"}
+                      />
+                    </div>
                   </div>
                   <div>
                     <div className="text-xs text-muted-foreground">Title</div>
@@ -5849,19 +5858,27 @@ export default function SupplierRiskOpsDashboard() {
                             <div className="flex items-center gap-2">
                               {t.status === "done" ? <CheckCircle2 className="h-4 w-4" /> : <AlertCircle className="h-4 w-4" />}
                               <div className="font-medium">{t.title}</div>
-                              {t.priority && t.priority !== "normal" ? (
-                                <Badge variant={t.priority === "urgent" ? "destructive" : "outline"}>
-                                  {t.priority === "urgent" ? "Urgent" : "Reminder"}
+                              {t.kind === "email" ? (
+                                <Badge variant={t.followUpStage === "urgent" ? "destructive" : "outline"} className="text-[10px]">
+                                  {t.followUpStage === "urgent"
+                                    ? "Urgent call"
+                                    : t.followUpStage === "followup"
+                                      ? "Follow-up"
+                                      : "Initial email"}
                                 </Badge>
                               ) : null}
                             </div>
                             <div className="mt-1 text-xs text-muted-foreground">
                               Owner: {t.owner}
-                              {t.supplierName ? ` • ${t.supplierName}` : t.supplierCode ? ` • ${t.supplierCode}` : ""}
-                              {t.contactEmail ? ` • Contact: ${t.contactEmail}` : ""}
+                              {t.supplierCode ? ` • Supplier: ${t.supplierCode}` : ""}
+                              {t.supplierName ? ` • ${t.supplierName}` : ""}
                             </div>
                             <div className="mt-1 text-xs text-muted-foreground">
-                              Created: {fmtDate(t.createdAt)} • Resolve by: {t.dueDate ?? t.date}
+                              Created: {t.createdAt ? fmtDate(t.createdAt) : "N/A"}
+                              {t.dueDate ? ` • Due: ${t.dueDate}` : ""}
+                              {t.contactName || t.contactEmail
+                                ? ` • Contact: ${t.contactName || ""}${t.contactEmail ? ` (${t.contactEmail})` : ""}`
+                                : ""}
                             </div>
                             {t.note ? <div className="mt-2 text-sm">{t.note}</div> : null}
                           </div>
