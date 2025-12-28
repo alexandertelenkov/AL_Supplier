@@ -1348,6 +1348,7 @@ export default function SupplierRiskOpsDashboard() {
   const [drillSortState, setDrillSortState] = useState<{ key: string; dir: "asc" | "desc" }>({ key: "spendInSlice", dir: "desc" });
   const [categoryTableSortState, setCategoryTableSortState] = useState<{ key: string; dir: "asc" | "desc" }>({ key: "highRiskSuppliers", dir: "desc" });
   const [barInsight, setBarInsight] = useState<{ title: string; label: string; details: string[] } | null>(null);
+  const [barAnalysis, setBarAnalysis] = useState<{ title: string; details: Record<string, any> } | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
